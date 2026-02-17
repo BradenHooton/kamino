@@ -1,0 +1,21 @@
+graph TD
+    A["Client<br/>Authorization: Bearer {token}"] -->|HTTP Request| B["HTTP Router"]
+    B -->|"Route to Protected Resource"| C["Auth Middleware"]
+    C -->|"Extract Bearer Token"| D{"Token Header Valid?"}
+    D -->|No| E["Return 401<br/>Invalid Format"]
+    D -->|Yes| F["Token Manager"]
+    F -->|"Parse & Validate JWT"| G{"Token Signature Valid?<br/>Using Composite Key"}
+    G -->|No| H["Return 401<br/>Invalid Token"]
+    G -->|Yes| I{"Token Expired?"}
+    I -->|Yes| J["Return 401<br/>Token Expired"]
+    I -->|No| K{"Token Type Check<br/>Must be 'access'"}
+    K -->|Refresh Token| L["Return 401<br/>Refresh tokens not allowed"]
+    K -->|Access Token| M{"Revocation Checker<br/>Enabled?"}
+    M -->|Yes| N["Token Revocation Repository"]
+    N -->|Query JTI in Blacklist| O{"Token Revoked?"}
+    O -->|Yes| P["Return 401<br/>Token Revoked"]
+    O -->|No| Q["Token Valid & Not Revoked"]
+    M -->|No| Q
+    Q -->|"Inject Claims into<br/>Context(UserID, Email)"| R["Protected Handler"]
+    R -->|"User claims available<br/>via GetUserFromContext"| S["Handler Logic Executes"]
+    S -->|Return 200+ Response| T["Client"]

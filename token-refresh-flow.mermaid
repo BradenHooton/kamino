@@ -1,0 +1,21 @@
+graph TD
+    A["Client"] -->|"POST /auth/refresh"| B["Refresh Handler"]
+    B -->|Validate Request| C{"Refresh Token Present?"}
+    C -->|No| D["Return 400 Bad Request"]
+    C -->|Yes| E["Auth Service"]
+    E -->|"Parse & Validate<br/>Refresh Token"| F["Token Manager"]
+    F -->|"Verify Signature<br/>Verify Type='refresh'"| G{"Refresh Token Valid?"}
+    G -->|No| H["Return 401<br/>Invalid Token"]
+    G -->|Yes| I["Fetch Fresh User Data"]
+    I -->|Query by UserID| J["User Repository"]
+    J -->|User| K{"User Found &<br/>Account Active?"}
+    K -->|No| L["Return 401<br/>Unauthorized"]
+    K -->|Yes| M{"Password Changed<br/>After Token Issue?"}
+    M -->|Yes| N["Return 401<br/>Session Invalidated<br/>Password Changed"]
+    M -->|No| O["Generate New Access Token"]
+    O -->|Sign with Composite Key| F
+    O -->|JWT| P["Generate New Refresh Token"]
+    P -->|Sign with Composite Key| F
+    F -->|Token Pair| Q["Build Auth Response"]
+    Q -->|Log Success| R["Audit Logger"]
+    R -->|Return 200| S["Client<br/>New Token Pair"]

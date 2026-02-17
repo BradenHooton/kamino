@@ -1,0 +1,50 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Environment files
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test files
+*_test.go
+tests/
+coverage.*
+*.prof
+
+# Build artifacts
+kamino
+*.exe
+*.dll
+*.so
+*.dylib
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.circleci/
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Misc
+tmp/
+temp/
+*.log
+vendor/

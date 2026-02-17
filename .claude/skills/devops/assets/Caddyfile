@@ -1,0 +1,29 @@
+{
+    email {$EMAIL}
+}
+
+{$DOMAIN} {
+    # Frontend SPA
+    reverse_proxy frontend:80
+
+    # API Requests
+    handle_path /api/* {
+        reverse_proxy backend:8080
+    }
+
+    # Admin Panel
+    handle_path /admin/* {
+        reverse_proxy admin:80
+    }
+
+    # Compression
+    encode gzip zstd
+
+    # Standard security headers
+    header {
+        Permissions-Policy interest-cohort=()
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+    }
+}
