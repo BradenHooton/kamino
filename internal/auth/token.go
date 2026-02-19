@@ -124,6 +124,39 @@ func (tm *TokenManager) GenerateRefreshToken(userID, email string) (string, erro
 	return tokenString, nil
 }
 
+// GenerateMFAToken creates a short-lived MFA challenge token (5 minutes)
+// This token is returned to the client after successful password verification
+// and must be provided to verify the TOTP code
+func (tm *TokenManager) GenerateMFAToken(userID, email string) (string, error) {
+	jti := uuid.New().String()
+
+	claims := &models.TokenClaims{
+		Type:   "mfa",
+		UserID: userID,
+		Email:  email,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+
+	signingKey, err := tm.getSigningKey(userID)
+	if err != nil {
+		return "", fmt.Errorf("failed to get signing key: %w", err)
+	}
+
+	tokenString, err := token.SignedString(signingKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to sign MFA token: %w", err)
+	}
+
+	return tokenString, nil
+}
+
 // ValidateToken verifies a token and returns its claims
 func (tm *TokenManager) ValidateToken(tokenString string) (*models.TokenClaims, error) {
 	claims := &models.TokenClaims{}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/go-chi/chi/v5"
 )
@@ -94,6 +95,7 @@ func (h *UserHandler) RegisterRoutes(router chi.Router) {
 // @Param id path string true "User ID"
 // @Produce json
 // @Success 200 {object} UserResponse
+// @Failure 403 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /users/{id} [get]
@@ -101,6 +103,12 @@ func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	if userID == "" {
 		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check resource-level authorization
+	if err := h.checkUserAccess(r, userID); err != nil {
+		http.Error(w, "Forbidden: you cannot access this resource", http.StatusForbidden)
 		return
 	}
 
@@ -237,6 +245,7 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 // @Produce json
 // @Success 200 {object} UserResponse
 // @Failure 400 {object} ErrorResponse
+// @Failure 403 {object} ErrorResponse
 // @Failure 404 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /users/{id} [put]
@@ -244,6 +253,12 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	if userID == "" {
 		http.Error(w, "User ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check resource-level authorization
+	if err := h.checkUserAccess(r, userID); err != nil {
+		http.Error(w, "Forbidden: you cannot access this resource", http.StatusForbidden)
 		return
 	}
 
@@ -317,6 +332,32 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // Helper functions
+
+// checkUserAccess verifies that the authenticated user can access the requested resource
+// Allows access if: user is accessing their own data OR user is admin
+func (h *UserHandler) checkUserAccess(r *http.Request, requestedUserID string) error {
+	claims := auth.GetUserFromContext(r)
+	if claims == nil {
+		return errors.New("user not found in context")
+	}
+
+	// User can access their own data
+	if claims.UserID == requestedUserID {
+		return nil
+	}
+
+	// Admin can access any user
+	user, err := h.service.GetUserByID(claims.UserID)
+	if err != nil {
+		return err
+	}
+
+	if user.Role == "admin" {
+		return nil
+	}
+
+	return errors.New("insufficient permissions")
+}
 
 // parseIntParam parses and validates an integer parameter
 func parseIntParam(value string, dest *int, min, max int) (int, error) {

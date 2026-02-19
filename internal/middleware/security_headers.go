@@ -57,7 +57,7 @@ func SecurityHeaders(config SecurityHeadersConfig) func(http.Handler) http.Handl
 
 			// Strict-Transport-Security: HTTPS enforcement (HSTS)
 			// Only send for HTTPS connections in production
-			if config.Env == "production" && r.Header.Get("X-Forwarded-Proto") == "https" || r.URL.Scheme == "https" {
+			if config.Env == "production" && (r.Header.Get("X-Forwarded-Proto") == "https" || r.URL.Scheme == "https") {
 				// max-age: 31536000 seconds (1 year)
 				// includeSubDomains: applies to all subdomains
 				// preload: allows inclusion in HSTS preload lists
@@ -76,6 +76,22 @@ func SecurityHeaders(config SecurityHeadersConfig) func(http.Handler) http.Handl
 					"payment=(), "+
 					"usb=()",
 			)
+
+			// X-DNS-Prefetch-Control: Prevents DNS prefetching to avoid information leakage
+			w.Header().Set("X-DNS-Prefetch-Control", "off")
+
+			// Cross-Origin-Embedder-Policy: Controls resource embedding
+			// Production: require-corp (strict isolation)
+			// Development: credentialless (allows third-party resources for tooling)
+			if config.Env == "production" {
+				w.Header().Set("Cross-Origin-Embedder-Policy", "require-corp")
+			} else {
+				w.Header().Set("Cross-Origin-Embedder-Policy", "credentialless")
+			}
+
+			// Cross-Origin-Opener-Policy: Isolates browsing context
+			// same-origin prevents window.opener attacks
+			w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 
 			next.ServeHTTP(w, r)
 		})

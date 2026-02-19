@@ -1,0 +1,19 @@
+graph TD
+    A["Client<br/>Authorization: Bearer {access_token}"] -->|"POST /auth/logout"| B["Logout Handler"]
+    B -->|Extract Token from Header| C{"Token Valid?"}
+    C -->|No| D["Return 400/401<br/>Invalid Header"]
+    C -->|Yes| E["Auth Service"]
+    E -->|"Parse Token to Extract JTI"| F["Token Manager"]
+    F -->|Token Claims with JTI| G["Token Revocation Repository"]
+    G -->|"INSERT into revoked_tokens<br/>jti, user_id, expiry, reason='logout'"| H["Revoked Tokens Table"]
+    H -->|Success| I["Log Logout Event"]
+    I -->|Audit Trail| J["Audit Logger"]
+    J -->|Return 204<br/>No Content| K["Client<br/>Session Terminated"]
+    
+    L["Client"] -->|"POST /auth/logout-all"| M["LogoutAll Handler"]
+    M -->|Get UserID from Context| N["Auth Service"]
+    N -->|Revoke All User Tokens| G
+    G -->|"UPDATE revoked_tokens<br/>WHERE user_id = {id}"| H
+    H -->|Success| O["Log LogoutAll Event"]
+    O -->|Audit Trail| J
+    J -->|Return 204| P["Client<br/>All Sessions Terminated"]

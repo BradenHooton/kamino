@@ -23,23 +23,29 @@ type TokenRevocationRepository interface {
 
 // AuthService handles authentication business logic
 type AuthService struct {
-	repo         UserRepository
-	revokeRepo   TokenRevocationRepository
-	tm           *auth.TokenManager
-	logger       *slog.Logger
-	auditLogger  *pkglogger.AuditLogger
-	env          string
+	repo                      UserRepository
+	revokeRepo                TokenRevocationRepository
+	tm                        *auth.TokenManager
+	rateLimitService          *RateLimitService
+	timingDelay               *auth.TimingDelay
+	logger                    *slog.Logger
+	auditLogger               *pkglogger.AuditLogger
+	env                       string
+	emailVerificationService  *EmailVerificationService
 }
 
 // NewAuthService creates a new AuthService
-func NewAuthService(repo UserRepository, tm *auth.TokenManager, revokeRepo TokenRevocationRepository, logger *slog.Logger, auditLogger *pkglogger.AuditLogger, env string) *AuthService {
+func NewAuthService(repo UserRepository, tm *auth.TokenManager, revokeRepo TokenRevocationRepository, rateLimitService *RateLimitService, timingDelay *auth.TimingDelay, logger *slog.Logger, auditLogger *pkglogger.AuditLogger, env string, emailVerificationService *EmailVerificationService) *AuthService {
 	return &AuthService{
-		repo:        repo,
-		revokeRepo:  revokeRepo,
-		tm:          tm,
-		logger:      logger,
-		auditLogger: auditLogger,
-		env:         env,
+		repo:                     repo,
+		revokeRepo:               revokeRepo,
+		tm:                       tm,
+		rateLimitService:         rateLimitService,
+		timingDelay:              timingDelay,
+		logger:                   logger,
+		auditLogger:              auditLogger,
+		env:                      env,
+		emailVerificationService: emailVerificationService,
 	}
 }
 
@@ -62,10 +68,67 @@ type AuthResponse struct {
 }
 
 // Login authenticates a user and returns tokens
-func (s *AuthService) Login(ctx context.Context, email, password string) (*AuthResponse, error) {
+// ipAddress and userAgent are used for rate limiting and device fingerprinting
+func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, userAgent string) (*AuthResponse, error) {
+	startTime := time.Now()
+	var authErr error
+
+	// Defer timing delay to ensure it always runs on failure
+	defer func() {
+		if authErr != nil {
+			s.timingDelay.WaitFrom(startTime, false)
+		}
+	}()
+
 	if email = strings.ToLower(strings.TrimSpace(email)); email == "" {
 		s.logger.Warn("login attempt with empty email")
-		return nil, models.ErrUnauthorized
+		authErr = models.ErrUnauthorized
+		return nil, authErr
+	}
+
+	// 1. Check rate limiting BEFORE password validation (fail-open for DB errors)
+	allowed, lockoutDuration, err := s.rateLimitService.CheckRateLimit(ctx, email, ipAddress, userAgent)
+	if err != nil && !errors.Is(err, models.ErrRateLimitExceeded) {
+		s.logger.Error("rate limit check error", slog.Any("error", err))
+		// Fail open for availability - rate limit DB errors shouldn't block login
+		// Rate limit violations (detected successfully) still fail closed below
+	}
+
+	if !allowed {
+		if lockoutDuration != nil {
+			// Account has exceeded failed attempts - apply temporary lock
+			lockedUntil := time.Now().Add(*lockoutDuration)
+
+			// Try to lock the account in the database
+			// Fetch the user first to get current state
+			lockedUser, fetchErr := s.repo.GetByEmail(ctx, email)
+			if fetchErr == nil {
+				// Update user with lock
+				lockedUser.LockedUntil = &lockedUntil
+				_, updateErr := s.repo.Update(ctx, lockedUser.ID, lockedUser)
+				if updateErr != nil {
+					s.logger.Error("failed to lock account",
+						slog.String("email", email),
+						slog.Any("error", updateErr))
+				} else {
+					s.logger.Warn("account locked due to failed attempts",
+						slog.String("email", email),
+						slog.String("user_id", lockedUser.ID),
+						slog.Duration("lockout_duration", *lockoutDuration))
+					s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
+						EventType:     "account_locked",
+						UserID:        lockedUser.ID,
+						FailureReason: "too_many_failed_attempts",
+						Success:       false,
+					})
+				}
+			}
+			authErr = models.ErrAccountLockedBySystem
+		} else {
+			s.logger.Warn("rate limit exceeded", slog.String("ip", ipAddress))
+			authErr = models.ErrRateLimitExceeded
+		}
+		return nil, authErr
 	}
 
 	user, err := s.repo.GetByEmail(ctx, email)
@@ -73,15 +136,19 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*AuthR
 		if errors.Is(err, models.ErrNotFound) {
 			// Log login failure without exposing email
 			s.logger.Info("login failed: invalid credentials")
+			failureReason := "user_not_found"
+			_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, false, &failureReason)
 			s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
 				EventType:     "login_failed",
 				FailureReason: "invalid_credentials",
 				Success:       false,
 			})
-			return nil, models.ErrUnauthorized
+			authErr = models.ErrUnauthorized
+			return nil, authErr
 		}
 		s.logger.Error("failed to get user by email", slog.Any("error", err))
-		return nil, models.ErrInternalServer
+		authErr = models.ErrInternalServer
+		return nil, authErr
 	}
 
 	// Check account status
@@ -90,50 +157,82 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*AuthR
 			slog.String("user_id", user.ID),
 			slog.String("status", user.Status),
 			slog.Any("error", err))
+		failureReason := "account_blocked"
+		_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, false, &failureReason)
 		s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
 			EventType:     "login_failed",
 			UserID:        user.ID,
 			FailureReason: "account_blocked",
 			Success:       false,
 		})
-		return nil, err
+		authErr = err
+		return nil, authErr
 	}
 
-	// Enforce email verification
+	// Check email verification (Option A: Restrictive - no login until verified)
 	if !user.EmailVerified {
 		s.logger.Info("login blocked: email not verified", slog.String("user_id", user.ID))
+		failureReason := "email_not_verified"
+		_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, false, &failureReason)
 		s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
 			EventType:     "login_failed",
 			UserID:        user.ID,
 			FailureReason: "email_not_verified",
 			Success:       false,
 		})
-		return nil, models.ErrEmailNotVerified
+		authErr = models.ErrEmailNotVerified
+		return nil, authErr
 	}
 
 	// Verify password
 	if err := pkgauth.ComparePassword(user.PasswordHash, password); err != nil {
 		s.logger.Info("login failed: invalid credentials")
+		failureReason := "invalid_password"
+		_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, false, &failureReason)
 		s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
 			EventType:     "login_failed",
 			UserID:        user.ID,
 			FailureReason: "invalid_credentials",
 			Success:       false,
 		})
-		return nil, models.ErrUnauthorized
+		authErr = models.ErrUnauthorized
+		return nil, authErr
 	}
 
 	// Generate tokens
 	accessToken, err := s.tm.GenerateAccessToken(user.ID, user.Email)
 	if err != nil {
 		s.logger.Error("failed to generate access token", slog.String("user_id", user.ID), slog.Any("error", err))
-		return nil, models.ErrInternalServer
+		authErr = models.ErrInternalServer
+		return nil, authErr
 	}
 
 	refreshToken, err := s.tm.GenerateRefreshToken(user.ID, user.Email)
 	if err != nil {
 		s.logger.Error("failed to generate refresh token", slog.String("user_id", user.ID), slog.Any("error", err))
-		return nil, models.ErrInternalServer
+		authErr = models.ErrInternalServer
+		return nil, authErr
+	}
+
+	// Record successful login attempt
+	_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, true, nil)
+
+	// Clear any temporary locks on successful login
+	if user.LockedUntil != nil {
+		user.LockedUntil = nil
+		_, err := s.repo.Update(ctx, user.ID, user)
+		if err != nil {
+			s.logger.Error("failed to clear account lock on successful login",
+				slog.String("user_id", user.ID),
+				slog.Any("error", err))
+		} else {
+			s.logger.Info("account lock cleared after successful login", slog.String("user_id", user.ID))
+			s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
+				EventType: "account_lock_cleared",
+				UserID:    user.ID,
+				Success:   true,
+			})
+		}
 	}
 
 	s.logger.Info("user logged in", slog.String("user_id", user.ID))
@@ -143,6 +242,8 @@ func (s *AuthService) Login(ctx context.Context, email, password string) (*AuthR
 		Success:   true,
 	})
 
+	// Set authErr to nil to prevent timing delay on success
+	authErr = nil
 	return &AuthResponse{
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
@@ -198,6 +299,46 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenString strin
 		}
 	}
 
+	// Extract JTI from old refresh token for revocation
+	oldTokenJTI := claims.ID
+	if oldTokenJTI == "" {
+		s.logger.Warn("refresh token missing JTI", slog.String("user_id", user.ID))
+		return nil, models.ErrUnauthorized
+	}
+
+	// Extract expiration time for revocation record
+	var oldTokenExpiresAt time.Time
+	if claims.ExpiresAt != nil {
+		oldTokenExpiresAt = claims.ExpiresAt.Time
+	} else {
+		// Fallback: if no expiration in claims, use reasonable default
+		s.logger.Warn("refresh token missing expiration", slog.String("user_id", user.ID))
+		oldTokenExpiresAt = time.Now().Add(7 * 24 * time.Hour)
+	}
+
+	// Revoke the old refresh token to prevent replay attacks
+	// CRITICAL: Must succeed before we issue new tokens (fail-closed approach)
+	if err := s.revokeRepo.RevokeToken(
+		ctx,
+		oldTokenJTI,
+		user.ID,
+		"refresh",
+		oldTokenExpiresAt,
+		"token_refresh",
+	); err != nil {
+		s.logger.Error("failed to revoke old refresh token",
+			slog.String("user_id", user.ID),
+			slog.String("jti", oldTokenJTI),
+			slog.Any("error", err))
+
+		// Do not issue new tokens if revocation fails
+		return nil, models.ErrInternalServer
+	}
+
+	s.logger.Info("old refresh token revoked",
+		slog.String("user_id", user.ID),
+		slog.String("jti", oldTokenJTI))
+
 	// Generate new token pair
 	accessToken, err := s.tm.GenerateAccessToken(user.ID, user.Email)
 	if err != nil {
@@ -211,7 +352,9 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenString strin
 		return nil, models.ErrInternalServer
 	}
 
-	s.logger.Info("token refreshed", slog.String("user_id", user.ID))
+	s.logger.Info("token refreshed successfully",
+		slog.String("user_id", user.ID),
+		slog.String("old_jti", oldTokenJTI))
 
 	return &AuthResponse{
 		AccessToken:  accessToken,
@@ -240,9 +383,14 @@ func (s *AuthService) Register(ctx context.Context, email, password, name string
 	}
 
 	// Check if user already exists
-	_, err := s.repo.GetByEmail(ctx, email)
+	existingUser, err := s.repo.GetByEmail(ctx, email)
 	if err == nil {
-		s.logger.Info("registration failed: user already exists")
+		// User exists - log it but don't reveal this to caller
+		s.logger.Info("registration attempt for existing email",
+			slog.String("email", email),
+			slog.String("existing_user_id", existingUser.ID))
+
+		// Return conflict error (handler will convert to generic response)
 		return nil, models.ErrConflict
 	}
 	if !errors.Is(err, models.ErrNotFound) {
@@ -257,13 +405,14 @@ func (s *AuthService) Register(ctx context.Context, email, password, name string
 		return nil, models.ErrInternalServer
 	}
 
-	// Create user
+	// Create user with email unverified
 	now := time.Now()
 	user := &models.User{
 		Email:             email,
 		PasswordHash:      hashedPassword,
 		Name:              name,
-		Role:              "user", // Default role
+		EmailVerified:     false, // Require email verification before login
+		Role:              "user",
 		PasswordChangedAt: &now,
 	}
 
@@ -276,27 +425,23 @@ func (s *AuthService) Register(ctx context.Context, email, password, name string
 		return nil, models.ErrInternalServer
 	}
 
-	// Generate tokens
-	accessToken, err := s.tm.GenerateAccessToken(createdUser.ID, createdUser.Email)
-	if err != nil {
-		s.logger.Error("failed to generate access token", slog.String("user_id", createdUser.ID), slog.Any("error", err))
-		return nil, models.ErrInternalServer
-	}
-
-	refreshToken, err := s.tm.GenerateRefreshToken(createdUser.ID, createdUser.Email)
-	if err != nil {
-		s.logger.Error("failed to generate refresh token", slog.String("user_id", createdUser.ID), slog.Any("error", err))
-		return nil, models.ErrInternalServer
-	}
-
 	s.logger.Info("user registered", slog.String("user_id", createdUser.ID))
 	s.auditLogger.LogAccountAction("user_registered", createdUser.ID, "", nil)
 
-	return &AuthResponse{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		User:         userModelToResponse(createdUser),
-	}, nil
+	// Send verification email (don't fail registration if email send fails)
+	if s.emailVerificationService != nil {
+		if err := s.emailVerificationService.SendVerificationEmail(ctx, createdUser.ID, createdUser.Email); err != nil {
+			s.logger.Error("failed to send verification email",
+				slog.String("user_id", createdUser.ID),
+				slog.Any("error", err))
+			// Log but don't fail - user can request resend
+		}
+	}
+
+	// Return empty AuthResponse - tokens are not generated during registration
+	// because the handler returns a generic response for security (anti-enumeration)
+	// Users must verify email and log in separately to get tokens
+	return &AuthResponse{}, nil
 }
 
 // Logout revokes the current access token

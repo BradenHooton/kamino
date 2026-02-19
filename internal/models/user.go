@@ -17,4 +17,6 @@ type User struct {
     Status            string     // "active", "suspended", "disabled"
     LockedUntil       *time.Time // Temporary account lock expiration
     PasswordChangedAt *time.Time // Last password change timestamp for token invalidation
+    MFAEnabled        bool
+    MFAEnrolledAt     *time.Time // When user first successfully enrolled in MFA
 }

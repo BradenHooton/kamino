@@ -22,13 +22,19 @@ type TokenRevocationChecker interface {
 	IsTokenRevoked(ctx context.Context, jti string) (bool, error)
 }
 
+// RevocationConfig holds configuration for token revocation behavior
+type RevocationConfig struct {
+	FailClosed bool // If true, deny access if revocation check fails; if false, allow access (fail open)
+}
+
 // AuthMiddleware validates JWT tokens and injects user claims into context
 func AuthMiddleware(tm *TokenManager) func(next http.Handler) http.Handler {
-	return AuthMiddlewareWithRevocation(tm, nil)
+	return AuthMiddlewareWithRevocation(tm, nil, RevocationConfig{FailClosed: false})
 }
 
 // AuthMiddlewareWithRevocation validates JWT tokens and checks revocation status
-func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevocationChecker) func(next http.Handler) http.Handler {
+// Supports configurable fail-closed behavior for revocation check failures
+func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevocationChecker, revocationConfig RevocationConfig) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Extract token from Authorization header
@@ -64,9 +70,14 @@ func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevoc
 			if revocationChecker != nil && claims.ID != "" {
 				revoked, err := revocationChecker.IsTokenRevoked(r.Context(), claims.ID)
 				if err != nil {
-					// Log error but don't block request (fail open for availability)
-					http.Error(w, "internal server error", http.StatusInternalServerError)
-					return
+					// Handle revocation check errors based on configuration
+					if revocationConfig.FailClosed {
+						// Fail closed: deny access if we can't verify revocation status
+						http.Error(w, "unable to verify token status", http.StatusServiceUnavailable)
+						return
+					}
+					// Fail open: allow access if revocation check fails (for availability)
+					// Invalid/expired tokens still fail closed (handled above)
 				}
 				if revoked {
 					http.Error(w, "token has been revoked", http.StatusUnauthorized)

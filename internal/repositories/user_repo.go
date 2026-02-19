@@ -149,13 +149,13 @@ func (r *UserRepository) Update(ctx context.Context, id string, user *models.Use
 	user.UpdatedAt = time.Now()
 
 	query := `
-		UPDATE users SET name = $1, role = $2, status = $3, token_key = $4, updated_at = $5
-		WHERE id = $6
+		UPDATE users SET name = $1, role = $2, status = $3, token_key = $4, locked_until = $5, email_verified = $6, updated_at = $7
+		WHERE id = $8
 		RETURNING id, email, password_hash, name, email_verified, token_key, role, status, locked_until, password_changed_at, created_at, updated_at
 	`
 
 	updatedUser, err := scanUserRow(r.pool.QueryRow(ctx, query,
-		user.Name, user.Role, user.Status, user.TokenKey, user.UpdatedAt, id,
+		user.Name, user.Role, user.Status, user.TokenKey, user.LockedUntil, user.EmailVerified, user.UpdatedAt, id,
 	))
 
 	if err != nil {

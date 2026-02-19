@@ -51,9 +51,11 @@ func main() {
 	// Initialize repositories
 	userRepo := repositories.NewUserRepository(db)
 	revokeRepo := repositories.NewTokenRevocationRepository(db)
+	loginAttemptRepo := repositories.NewLoginAttemptRepository(db)
+	emailVerificationRepo := repositories.NewEmailVerificationRepository(db)
 
 	// Initialize cleanup manager
-	cleanupManager := background.NewCleanupManager(revokeRepo, logger, cfg.Auth.CleanupInterval)
+	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, logger, cfg.Auth.CleanupInterval)
 
 	// Initialize token manager
 	tokenManager := auth.NewTokenManager(
@@ -65,14 +67,60 @@ func main() {
 	// Enable composite signing with per-user TokenKey
 	tokenManager.SetUserRepo(userRepo)
 
-	// Initialize services
+	// Initialize security services
 	auditLogger := pkglogger.NewAuditLogger(logger)
+
+	// Rate limiting service
+	rateLimitConfig := services.RateLimitConfig{
+		MaxFailedAttemptsPerEmail:   cfg.Auth.MaxFailedAttemptsPerEmail,
+		EmailLockoutDuration:        cfg.Auth.EmailLockoutDuration,
+		MaxAttemptsPerIP:            cfg.Auth.MaxAttemptsPerIP,
+		MaxAttemptsPerDevice:        cfg.Auth.MaxAttemptsPerDevice,
+		LookbackWindow:              cfg.Auth.RateLimitLookbackWindow,
+		ProgressiveLockoutMultiplier: 1.5,
+		MaxLockoutDuration:          1 * time.Hour,
+	}
+	rateLimitService := services.NewRateLimitService(loginAttemptRepo, rateLimitConfig, logger)
+
+	// Timing delay for auth security
+	timingConfig := auth.TimingConfig{
+		BaseDelayMs:    cfg.Auth.TimingDelayBaseMs,
+		RandomDelayMs:  cfg.Auth.TimingDelayRandomMs,
+		DelayOnSuccess: cfg.Auth.TimingDelayOnSuccess,
+	}
+	timingDelay := auth.NewTimingDelay(timingConfig)
+
+	// CSRF token manager
+	csrfManager := auth.NewCSRFTokenManager()
+
+	// AWS SES email service
+	emailService, err := services.NewAWSSESEmailService(
+		cfg.Email.AWSRegion,
+		cfg.Email.FromAddress,
+		cfg.Email.VerificationURLBase,
+		logger,
+	)
+	if err != nil {
+		logger.Error("failed to initialize email service", slog.Any("error", err))
+		os.Exit(1)
+	}
+
+	// Email verification service
+	emailVerificationService := services.NewEmailVerificationService(
+		emailVerificationRepo,
+		userRepo,
+		emailService,
+		logger,
+		time.Duration(cfg.Email.TokenExpiryHours)*time.Hour,
+	)
+
+	// Initialize services
 	userService := services.NewUserService(userRepo, logger)
-	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, logger, auditLogger, cfg.Server.Env)
+	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
 
 	// Initialize handlers
 	userHandler := handlers.NewUserHandler(userService)
-	authHandler := handlers.NewAuthHandler(authService)
+	authHandler := handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService)
 
 	// Bootstrap first admin user if configured
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -96,7 +144,7 @@ func main() {
 	router.Use(middleware.Timeout(60 * time.Second))
 
 	// Register routes
-	routes.RegisterRoutes(router, userHandler, authHandler, tokenManager, userRepo, revokeRepo)
+	routes.RegisterRoutes(router, userHandler, authHandler, tokenManager, userRepo, revokeRepo, csrfManager, logger)
 
 	// Health check with database
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {

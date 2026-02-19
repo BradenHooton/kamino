@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"log/slog"
+
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/handlers"
 	"github.com/BradenHooton/kamino/internal/middleware"
@@ -16,17 +18,24 @@ func RegisterRoutes(
 	tokenManager *auth.TokenManager,
 	userRepo *repositories.UserRepository,
 	revokeRepo *repositories.TokenRevocationRepository,
+	csrfManager *auth.CSRFTokenManager,
+	logger *slog.Logger,
 ) {
 	// Rate limiting config for auth endpoints
 	rateLimitConfig := middleware.DefaultAuthRateLimit()
 
 	// Public routes - no authentication required
 	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/login", authHandler.Login)
+	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/register", authHandler.Register)
 	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/refresh", authHandler.RefreshToken)
+	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/verify-email", authHandler.VerifyEmail)
+	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/resend-verification", authHandler.ResendVerification)
 
 	// Protected routes - authentication required
 	router.Group(func(r chi.Router) {
-		r.Use(auth.AuthMiddlewareWithRevocation(tokenManager, revokeRepo))
+		revocationConfig := auth.RevocationConfig{FailClosed: false} // Set to true for fail-closed behavior
+		r.Use(auth.AuthMiddlewareWithRevocation(tokenManager, revokeRepo, revocationConfig))
+		r.Use(middleware.CSRFProtection(csrfManager, logger))
 
 		// Any authenticated user
 		r.Get("/users/{id}", userHandler.GetUser)
@@ -35,11 +44,11 @@ func RegisterRoutes(
 		// Auth endpoints
 		r.Post("/auth/logout", authHandler.Logout)
 		r.Post("/auth/logout-all", authHandler.LogoutAll)
+		r.Get("/auth/verification-status", authHandler.VerificationStatus)
 
 		// Admin-only routes
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(userRepo, "admin"))
-			r.Post("/auth/register", authHandler.Register)
 			r.Get("/users", userHandler.ListUsers)
 			r.Post("/users", userHandler.CreateUser)
 			r.Delete("/users/{id}", userHandler.DeleteUser)

@@ -20,37 +20,37 @@ func TestValidatePassword(t *testing.T) {
 			name:          "too short",
 			password:      "Pass@1",
 			shouldFail:    true,
-			errorContains: "at least 8 characters",
+			errorContains: "invalid password",
 		},
 		{
 			name:          "missing uppercase",
 			password:      "securepass@123",
 			shouldFail:    true,
-			errorContains: "uppercase",
+			errorContains: "invalid password",
 		},
 		{
 			name:          "missing lowercase",
 			password:      "SECUREPASS@123",
 			shouldFail:    true,
-			errorContains: "lowercase",
+			errorContains: "invalid password",
 		},
 		{
 			name:          "missing digit",
 			password:      "SecurePass@xyz",
 			shouldFail:    true,
-			errorContains: "digit",
+			errorContains: "invalid password",
 		},
 		{
 			name:          "missing special character",
 			password:      "SecurePass123",
 			shouldFail:    true,
-			errorContains: "special character",
+			errorContains: "invalid password",
 		},
 		{
 			name:          "common password rejected",
 			password:      "password123",
 			shouldFail:    true,
-			errorContains: "too common",
+			errorContains: "invalid password",
 		},
 		{
 			name:       "valid with symbols",
@@ -66,7 +66,7 @@ func TestValidatePassword(t *testing.T) {
 			name:          "too long",
 			password:      "A" + string(make([]byte, 150)) + "1@a",
 			shouldFail:    true,
-			errorContains: "at most 128 characters",
+			errorContains: "invalid password",
 		},
 	}
 

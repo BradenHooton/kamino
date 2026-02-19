@@ -14,6 +14,7 @@ type Config struct {
 	Database DatabaseConfig
 	Server   ServerConfig
 	Auth     AuthConfig
+	Email    EmailConfig
 }
 
 type DatabaseConfig struct {
@@ -38,10 +39,30 @@ type ServerConfig struct {
 }
 
 type AuthConfig struct {
-	JWTSecret           string
-	AccessTokenExpiry   time.Duration
-	RefreshTokenExpiry  time.Duration
-	CleanupInterval     time.Duration
+	JWTSecret                    string
+	AccessTokenExpiry            time.Duration
+	RefreshTokenExpiry           time.Duration
+	CleanupInterval              time.Duration
+	MaxFailedAttemptsPerEmail    int
+	EmailLockoutDuration         time.Duration
+	MaxAttemptsPerIP             int
+	MaxAttemptsPerDevice         int
+	RateLimitLookbackWindow      time.Duration
+	CookieDomain                 string
+	CookieSecure                 bool
+	CookieSameSite               string
+	TimingDelayBaseMs            int
+	TimingDelayRandomMs          int
+	TimingDelayOnSuccess         bool
+}
+
+type EmailConfig struct {
+	AWSRegion            string
+	FromAddress          string
+	VerificationURLBase  string
+	TokenExpiryHours     int
+	CleanupIntervalHours int
+	CleanupThresholdDays int
 }
 
 func Load() (*Config, error) {
@@ -75,10 +96,29 @@ func Load() (*Config, error) {
 			AllowedOrigins:  parseAllowedOrigins(env),
 		},
 		Auth: AuthConfig{
-			JWTSecret:          jwtSecret,
-			AccessTokenExpiry:  getEnvAsDuration("ACCESS_TOKEN_EXPIRY", 15*time.Minute),
-			RefreshTokenExpiry: getEnvAsDuration("REFRESH_TOKEN_EXPIRY", 7*24*time.Hour),
-			CleanupInterval:    getEnvAsDuration("TOKEN_CLEANUP_INTERVAL", 1*time.Hour),
+			JWTSecret:                   jwtSecret,
+			AccessTokenExpiry:           getEnvAsDuration("ACCESS_TOKEN_EXPIRY", 15*time.Minute),
+			RefreshTokenExpiry:          getEnvAsDuration("REFRESH_TOKEN_EXPIRY", 7*24*time.Hour),
+			CleanupInterval:             getEnvAsDuration("TOKEN_CLEANUP_INTERVAL", 1*time.Hour),
+			MaxFailedAttemptsPerEmail:   getEnvAsInt("MAX_FAILED_ATTEMPTS_PER_EMAIL", 5),
+			EmailLockoutDuration:        getEnvAsDuration("EMAIL_LOCKOUT_DURATION", 15*time.Minute),
+			MaxAttemptsPerIP:            getEnvAsInt("MAX_ATTEMPTS_PER_IP", 20),
+			MaxAttemptsPerDevice:        getEnvAsInt("MAX_ATTEMPTS_PER_DEVICE", 10),
+			RateLimitLookbackWindow:     getEnvAsDuration("RATE_LIMIT_LOOKBACK_WINDOW", 15*time.Minute),
+			CookieDomain:                getEnv("COOKIE_DOMAIN", ""),
+			CookieSecure:                getEnv("ENV", "development") == "production" && getEnv("COOKIE_SECURE", "true") == "true",
+			CookieSameSite:              getEnv("COOKIE_SAME_SITE", "strict"),
+			TimingDelayBaseMs:           getEnvAsInt("TIMING_DELAY_BASE_MS", 500),
+			TimingDelayRandomMs:         getEnvAsInt("TIMING_DELAY_RANDOM_MS", 500),
+			TimingDelayOnSuccess:        getEnv("TIMING_DELAY_ON_SUCCESS", "false") == "true",
+		},
+		Email: EmailConfig{
+			AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
+			FromAddress:          getEnv("EMAIL_FROM_ADDRESS", "noreply@kamino.example"),
+			VerificationURLBase:  getEnv("EMAIL_VERIFICATION_URL_BASE", "http://localhost:3000"),
+			TokenExpiryHours:     getEnvAsInt("EMAIL_VERIFICATION_TOKEN_EXPIRY_HOURS", 24),
+			CleanupIntervalHours: getEnvAsInt("EMAIL_VERIFICATION_CLEANUP_INTERVAL_HOURS", 24),
+			CleanupThresholdDays: getEnvAsInt("EMAIL_VERIFICATION_CLEANUP_DAYS_THRESHOLD", 30),
 		},
 	}
 
@@ -89,6 +129,11 @@ func Load() (*Config, error) {
 	// Validate JWT secret strength
 	if err := validateJWTSecret(jwtSecret, env); err != nil {
 		return nil, err
+	}
+
+	// Validate CORS configuration in production
+	if env == "production" && len(cfg.Server.AllowedOrigins) == 0 {
+		return nil, fmt.Errorf("ALLOWED_ORIGINS is required in production environment")
 	}
 
 	return cfg, nil

@@ -17,7 +17,7 @@ const (
 	MaxPasswordLen  = 128
 )
 
-// PasswordValidationError holds validation error details
+// PasswordValidationError holds validation error details (internal use only)
 type PasswordValidationError struct {
 	Errors []string
 }
@@ -26,7 +26,8 @@ func (e *PasswordValidationError) Error() string {
 	if len(e.Errors) == 0 {
 		return "password validation failed"
 	}
-	return fmt.Sprintf("password requirements not met: %s", e.Errors[0])
+	// Return generic error to users - never expose specific requirements to prevent enumeration attacks
+	return "invalid password"
 }
 
 // Common weak passwords to reject

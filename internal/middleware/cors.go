@@ -56,8 +56,9 @@ func CORS(config *CORSConfig) func(http.Handler) http.Handler {
 				}
 			}
 
-			// Set CORS headers if origin is allowed
-			if allowed || len(config.AllowedOrigins) == 0 {
+			// Security fail-closed: Only allow explicitly configured origins
+			// This prevents accidental CORS misconfiguration in production
+			if allowed {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
 				w.Header().Set("Access-Control-Allow-Methods", strings.Join(config.AllowedMethods, ", "))
 				w.Header().Set("Access-Control-Allow-Headers", strings.Join(config.AllowedHeaders, ", "))
