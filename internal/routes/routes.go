@@ -15,6 +15,7 @@ func RegisterRoutes(
 	router chi.Router,
 	userHandler *handlers.UserHandler,
 	authHandler *handlers.AuthHandler,
+	mfaHandler *handlers.MFAHandler,
 	tokenManager *auth.TokenManager,
 	userRepo *repositories.UserRepository,
 	revokeRepo *repositories.TokenRevocationRepository,
@@ -31,9 +32,27 @@ func RegisterRoutes(
 	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/verify-email", authHandler.VerifyEmail)
 	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/resend-verification", authHandler.ResendVerification)
 
+	// MFA routes (only register if MFA is enabled)
+	if mfaHandler != nil {
+		// Protected MFA management routes
+		router.Group(func(r chi.Router) {
+			revocationConfig := auth.RevocationConfig{FailClosed: true}
+			r.Use(auth.AuthMiddlewareWithRevocation(tokenManager, revokeRepo, revocationConfig))
+			r.Use(middleware.CSRFProtection(csrfManager, logger))
+
+			r.Post("/mfa/setup", mfaHandler.InitiateSetup)
+			r.Post("/mfa/setup/verify", mfaHandler.VerifySetup)
+			r.Post("/mfa/disable", mfaHandler.DisableMFA)
+			r.Get("/mfa/status", mfaHandler.GetStatus)
+		})
+
+		// Public MFA verification route (rate-limited)
+		router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/mfa/verify", mfaHandler.VerifyMFACode)
+	}
+
 	// Protected routes - authentication required
 	router.Group(func(r chi.Router) {
-		revocationConfig := auth.RevocationConfig{FailClosed: false} // Set to true for fail-closed behavior
+		revocationConfig := auth.RevocationConfig{FailClosed: true}
 		r.Use(auth.AuthMiddlewareWithRevocation(tokenManager, revokeRepo, revocationConfig))
 		r.Use(middleware.CSRFProtection(csrfManager, logger))
 

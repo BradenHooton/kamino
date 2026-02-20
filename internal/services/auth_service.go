@@ -55,6 +55,7 @@ type UserResponse struct {
 	Email         string `json:"email"`
 	Name          string `json:"name"`
 	EmailVerified bool   `json:"email_verified"`
+	MFAEnabled    bool   `json:"mfa_enabled"`
 	Role          string `json:"role"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
@@ -62,9 +63,13 @@ type UserResponse struct {
 
 // AuthResponse represents the response from auth operations
 type AuthResponse struct {
-	AccessToken  string       `json:"access_token"`
-	RefreshToken string       `json:"refresh_token"`
-	User         *UserResponse `json:"user"`
+	AccessToken  string        `json:"access_token,omitempty"`
+	RefreshToken string        `json:"refresh_token,omitempty"`
+	User         *UserResponse `json:"user,omitempty"`
+
+	// MFA fields
+	MFARequired bool   `json:"mfa_required,omitempty"`
+	MFAToken    string `json:"mfa_token,omitempty"`
 }
 
 // Login authenticates a user and returns tokens
@@ -72,10 +77,11 @@ type AuthResponse struct {
 func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, userAgent string) (*AuthResponse, error) {
 	startTime := time.Now()
 	var authErr error
+	var mfaRequired bool
 
 	// Defer timing delay to ensure it always runs on failure
 	defer func() {
-		if authErr != nil {
+		if authErr != nil && !mfaRequired {
 			s.timingDelay.WaitFrom(startTime, false)
 		}
 	}()
@@ -152,7 +158,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, use
 	}
 
 	// Check account status
-	if err := validateAccountState(user); err != nil {
+	if err := s.validateAccountState(user); err != nil {
 		s.logger.Info("login blocked due to account state",
 			slog.String("user_id", user.ID),
 			slog.String("status", user.Status),
@@ -169,8 +175,9 @@ func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, use
 		return nil, authErr
 	}
 
-	// Check email verification (Option A: Restrictive - no login until verified)
-	if !user.EmailVerified {
+	// Check email verification (only if email verification is enabled)
+	// Option A: Restrictive - no login until verified
+	if s.emailVerificationService != nil && !user.EmailVerified {
 		s.logger.Info("login blocked: email not verified", slog.String("user_id", user.ID))
 		failureReason := "email_not_verified"
 		_ = s.rateLimitService.RecordLoginAttempt(ctx, email, ipAddress, userAgent, false, &failureReason)
@@ -197,6 +204,32 @@ func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, use
 		})
 		authErr = models.ErrUnauthorized
 		return nil, authErr
+	}
+
+	// Check if MFA is enabled for this user
+	if user.MFAEnabled {
+		// Generate 5-minute MFA challenge token
+		mfaToken, err := s.tm.GenerateMFAToken(user.ID, user.Email)
+		if err != nil {
+			s.logger.Error("failed to generate MFA token", slog.String("user_id", user.ID), slog.Any("error", err))
+			authErr = models.ErrInternalServer
+			return nil, authErr
+		}
+
+		s.logger.Info("MFA required for login", slog.String("user_id", user.ID))
+		s.auditLogger.LogAuthAttempt(pkglogger.AuditEvent{
+			EventType: "mfa_required",
+			UserID:    user.ID,
+			Success:   false, // Not fully authenticated yet
+		})
+
+		// Return MFA required response instead of tokens
+		mfaRequired = true
+		authErr = nil // Clear error to prevent timing delay (MFA is not a failure)
+		return &AuthResponse{
+			MFARequired: true,
+			MFAToken:    mfaToken,
+		}, nil
 	}
 
 	// Generate tokens
@@ -282,7 +315,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshTokenString strin
 	}
 
 	// Validate account state
-	if err := validateAccountState(user); err != nil {
+	if err := s.validateAccountState(user); err != nil {
 		s.logger.Info("token refresh blocked due to account state",
 			slog.String("user_id", user.ID),
 			slog.String("status", user.Status))
@@ -493,7 +526,8 @@ func (s *AuthService) LogoutAll(ctx context.Context, userID string) error {
 }
 
 // validateAccountState checks if user account is in valid state for authentication
-func validateAccountState(user *models.User) error {
+// Email verification is only enforced if emailVerificationService is configured
+func (s *AuthService) validateAccountState(user *models.User) error {
 	// Check account status
 	switch user.Status {
 	case "disabled":
@@ -511,6 +545,11 @@ func validateAccountState(user *models.User) error {
 		return models.ErrAccountLocked
 	}
 
+	// Check email verification (only if email verification is enabled)
+	if s.emailVerificationService != nil && !user.EmailVerified {
+		return models.ErrEmailNotVerified
+	}
+
 	return nil
 }
 
@@ -521,6 +560,7 @@ func userModelToResponse(user *models.User) *UserResponse {
 		Email:         user.Email,
 		Name:          user.Name,
 		EmailVerified: user.EmailVerified,
+		MFAEnabled:    user.MFAEnabled,
 		Role:          user.Role,
 		CreatedAt:     user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:     user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),

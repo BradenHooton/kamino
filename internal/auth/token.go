@@ -20,15 +20,19 @@ type TokenManager struct {
 	secret              string
 	accessTokenExpiry   time.Duration
 	refreshTokenExpiry  time.Duration
+	mfaTokenExpiry      time.Duration
+	timeout             time.Duration
 	userRepo            UserTokenKeyFetcher
 }
 
 // NewTokenManager creates a new TokenManager
-func NewTokenManager(secret string, accessExpiry, refreshExpiry time.Duration) *TokenManager {
+func NewTokenManager(secret string, accessExpiry, refreshExpiry, mfaExpiry, timeout time.Duration) *TokenManager {
 	return &TokenManager{
 		secret:              secret,
 		accessTokenExpiry:   accessExpiry,
 		refreshTokenExpiry:  refreshExpiry,
+		mfaTokenExpiry:      mfaExpiry,
+		timeout:             timeout,
 	}
 }
 
@@ -46,7 +50,7 @@ func (tm *TokenManager) getSigningKey(userID string) ([]byte, error) {
 	}
 
 	// Fetch user's TokenKey
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), tm.timeout)
 	defer cancel()
 
 	user, err := tm.userRepo.GetByID(ctx, userID)
@@ -124,7 +128,7 @@ func (tm *TokenManager) GenerateRefreshToken(userID, email string) (string, erro
 	return tokenString, nil
 }
 
-// GenerateMFAToken creates a short-lived MFA challenge token (5 minutes)
+// GenerateMFAToken creates a short-lived MFA challenge token
 // This token is returned to the client after successful password verification
 // and must be provided to verify the TOTP code
 func (tm *TokenManager) GenerateMFAToken(userID, email string) (string, error) {
@@ -136,7 +140,7 @@ func (tm *TokenManager) GenerateMFAToken(userID, email string) (string, error) {
 		Email:  email,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ID:        jti,
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(5 * time.Minute)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tm.mfaTokenExpiry)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			NotBefore: jwt.NewNumericDate(time.Now()),
 		},

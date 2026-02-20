@@ -34,20 +34,23 @@ type EmailVerificationServiceInterface interface {
 type AuthHandler struct {
 	service                      AuthServiceInterface
 	emailVerificationService     EmailVerificationServiceInterface
+	ipConfig                     *pkghttp.IPConfig
 }
 
 // NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(service AuthServiceInterface) *AuthHandler {
+func NewAuthHandler(service AuthServiceInterface, ipConfig *pkghttp.IPConfig) *AuthHandler {
 	return &AuthHandler{
-		service: service,
+		service:  service,
+		ipConfig: ipConfig,
 	}
 }
 
 // NewAuthHandlerWithEmailVerification creates a new AuthHandler with email verification support
-func NewAuthHandlerWithEmailVerification(service AuthServiceInterface, emailVerificationService EmailVerificationServiceInterface) *AuthHandler {
+func NewAuthHandlerWithEmailVerification(service AuthServiceInterface, emailVerificationService EmailVerificationServiceInterface, ipConfig *pkghttp.IPConfig) *AuthHandler {
 	return &AuthHandler{
 		service:                  service,
 		emailVerificationService: emailVerificationService,
+		ipConfig:                 ipConfig,
 	}
 }
 
@@ -101,13 +104,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req LoginRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -115,7 +118,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
 	// Extract IP address and User-Agent for rate limiting
-	ipAddress := pkghttp.ExtractClientIP(r)
+	ipAddress := pkghttp.ExtractClientIP(r, h.ipConfig)
 	userAgent := r.Header.Get("User-Agent")
 
 	// Authenticate user
@@ -123,18 +126,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, models.ErrUnauthorized):
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Authentication failed")
 		case errors.Is(err, models.ErrRateLimitExceeded),
 			errors.Is(err, models.ErrAccountLockedBySystem):
-			http.Error(w, "Too many failed login attempts. Please try again later.", http.StatusTooManyRequests)
+			pkghttp.WriteTooManyRequests(w, "Too many failed login attempts. Please try again later.")
 		case errors.Is(err, models.ErrAccountDisabled),
 			errors.Is(err, models.ErrAccountSuspended),
 			errors.Is(err, models.ErrAccountLocked),
 			errors.Is(err, models.ErrEmailNotVerified):
 			// Return generic error for all account status issues to prevent user enumeration
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Authentication failed")
 		default:
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			pkghttp.WriteInternalError(w, "Internal server error")
 		}
 		return
 	}
@@ -158,13 +161,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var req RegisterRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -188,7 +191,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// All other errors
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -214,13 +217,13 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	var req RefreshTokenRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -229,14 +232,15 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, models.ErrUnauthorized):
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Authentication failed")
 		case errors.Is(err, models.ErrAccountDisabled),
 			errors.Is(err, models.ErrAccountSuspended),
-			errors.Is(err, models.ErrAccountLocked):
+			errors.Is(err, models.ErrAccountLocked),
+			errors.Is(err, models.ErrEmailNotVerified):
 			// Return generic error for all account status issues to prevent user enumeration
-			http.Error(w, "Authentication failed", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Authentication failed")
 		default:
-			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			pkghttp.WriteInternalError(w, "Internal server error")
 		}
 		return
 	}
@@ -252,34 +256,38 @@ func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
 // @Security BearerAuth
 // @Produce json
 // @Success 204
-// @Failure 400 {object} ErrorResponse
 // @Failure 401 {object} ErrorResponse
 // @Failure 500 {object} ErrorResponse
 // @Router /auth/logout [post]
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
-	// Extract token from Authorization header
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "missing authorization header", http.StatusBadRequest)
+	// Get user claims from context (added by AuthMiddleware)
+	claims := auth.GetUserFromContext(r)
+	if claims == nil {
+		pkghttp.WriteUnauthorized(w, "unauthorized")
 		return
 	}
 
-	parts := strings.SplitN(authHeader, " ", 2)
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "invalid authorization header format", http.StatusBadRequest)
+	// Validate token type is "access" (defense-in-depth check)
+	if claims.Type != "access" {
+		pkghttp.WriteUnauthorized(w, "unauthorized")
 		return
 	}
 
-	accessToken := parts[1]
+	// Get raw token for revocation
+	accessToken := auth.GetTokenFromContext(r)
+	if accessToken == "" {
+		pkghttp.WriteUnauthorized(w, "unauthorized")
+		return
+	}
 
 	// Revoke the token
 	err := h.service.Logout(r.Context(), accessToken)
 	if err != nil {
 		if errors.Is(err, models.ErrUnauthorized) {
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Invalid token")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -299,14 +307,14 @@ func (h *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
 	// Get user from context (set by AuthMiddleware)
 	claims := auth.GetUserFromContext(r)
 	if claims == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "unauthorized")
 		return
 	}
 
 	// Logout from all devices
 	err := h.service.LogoutAll(r.Context(), claims.UserID)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -325,20 +333,20 @@ func (h *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
 // @Router /auth/verify-email [post]
 func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	if h.emailVerificationService == nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
 	var req VerifyEmailRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -346,10 +354,10 @@ func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	userID, err := h.emailVerificationService.VerifyEmail(r.Context(), req.Token)
 	if err != nil {
 		if errors.Is(err, models.ErrUnauthorized) {
-			http.Error(w, "Invalid or expired verification token", http.StatusUnauthorized)
+			pkghttp.WriteUnauthorized(w, "Invalid or expired verification token")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -374,20 +382,20 @@ func (h *AuthHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 // @Router /auth/resend-verification [post]
 func (h *AuthHandler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	if h.emailVerificationService == nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
 	var req ResendVerificationRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -415,21 +423,21 @@ func (h *AuthHandler) ResendVerification(w http.ResponseWriter, r *http.Request)
 // @Router /auth/verification-status [get]
 func (h *AuthHandler) VerificationStatus(w http.ResponseWriter, r *http.Request) {
 	if h.emailVerificationService == nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
 	// Get user from context (set by AuthMiddleware)
 	claims := auth.GetUserFromContext(r)
 	if claims == nil {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "unauthorized")
 		return
 	}
 
 	// Get verification status
 	isVerified, err := h.emailVerificationService.GetStatus(r.Context(), claims.UserID)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 

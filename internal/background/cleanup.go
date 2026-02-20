@@ -8,14 +8,15 @@ import (
 	"github.com/BradenHooton/kamino/internal/repositories"
 )
 
-// CleanupManager periodically removes expired revoked tokens, login attempts, and email verification tokens from the database
+// CleanupManager periodically removes expired revoked tokens, login attempts, email verification tokens, and MFA attempts from the database
 type CleanupManager struct {
-	revokeRepo               *repositories.TokenRevocationRepository
-	loginAttemptRepo         *repositories.LoginAttemptRepository
-	emailVerificationRepo    *repositories.EmailVerificationRepository
-	logger                   *slog.Logger
-	interval                 time.Duration
-	stopCh                   chan struct{}
+	revokeRepo            *repositories.TokenRevocationRepository
+	loginAttemptRepo      *repositories.LoginAttemptRepository
+	emailVerificationRepo *repositories.EmailVerificationRepository
+	mfaAttemptRepo        repositories.MFAAttemptRepository
+	logger                *slog.Logger
+	interval              time.Duration
+	stopCh                chan struct{}
 }
 
 // NewCleanupManager creates a new cleanup manager
@@ -23,6 +24,7 @@ func NewCleanupManager(
 	revokeRepo *repositories.TokenRevocationRepository,
 	loginAttemptRepo *repositories.LoginAttemptRepository,
 	emailVerificationRepo *repositories.EmailVerificationRepository,
+	mfaAttemptRepo repositories.MFAAttemptRepository,
 	logger *slog.Logger,
 	interval time.Duration,
 ) *CleanupManager {
@@ -30,6 +32,7 @@ func NewCleanupManager(
 		revokeRepo:            revokeRepo,
 		loginAttemptRepo:      loginAttemptRepo,
 		emailVerificationRepo: emailVerificationRepo,
+		mfaAttemptRepo:        mfaAttemptRepo,
 		logger:                logger,
 		interval:              interval,
 		stopCh:                make(chan struct{}),
@@ -90,9 +93,21 @@ func (cm *CleanupManager) runCleanup(ctx context.Context) {
 			cm.logger.Info("email verification token cleanup completed", slog.Int64("rows_deleted", rowsDeleted))
 		}
 	}
+
+	// Cleanup expired MFA attempts (30+ days old)
+	if cm.mfaAttemptRepo != nil {
+		threshold := time.Now().Add(-30 * 24 * time.Hour)
+		err := cm.mfaAttemptRepo.DeleteExpiredAttempts(cleanupCtx, threshold)
+		if err != nil {
+			cm.logger.Error("failed to cleanup expired MFA attempts", slog.Any("error", err))
+		} else {
+			cm.logger.Info("expired MFA attempt cleanup completed")
+		}
+	}
 }
 
 // Stop signals the cleanup manager to stop
 func (cm *CleanupManager) Stop() {
 	close(cm.stopCh)
 }
+

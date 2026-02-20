@@ -15,6 +15,7 @@ type Config struct {
 	Server   ServerConfig
 	Auth     AuthConfig
 	Email    EmailConfig
+	MFA      MFAConfig
 }
 
 type DatabaseConfig struct {
@@ -32,16 +33,22 @@ type DatabaseConfig struct {
 }
 
 type ServerConfig struct {
-	Port            string
-	Env             string
-	LogLevel        string
-	AllowedOrigins  []string
+	Port           string
+	Env            string
+	LogLevel       string
+	AllowedOrigins []string
+	TrustedProxies []string        // CIDR ranges of trusted proxies (e.g., ["10.0.0.0/8", "172.16.0.0/12"])
+	ReadTimeout    time.Duration   // HTTP server read timeout
+	WriteTimeout   time.Duration   // HTTP server write timeout
+	IdleTimeout    time.Duration   // HTTP server idle timeout
 }
 
 type AuthConfig struct {
 	JWTSecret                    string
 	AccessTokenExpiry            time.Duration
 	RefreshTokenExpiry           time.Duration
+	MFATokenExpiry               time.Duration
+	TokenManagerTimeout          time.Duration
 	CleanupInterval              time.Duration
 	MaxFailedAttemptsPerEmail    int
 	EmailLockoutDuration         time.Duration
@@ -63,6 +70,29 @@ type EmailConfig struct {
 	TokenExpiryHours     int
 	CleanupIntervalHours int
 	CleanupThresholdDays int
+	Required             bool // Email verification requirement (default: true for security)
+}
+
+type MFAConfig struct {
+	EncryptionKey    []byte
+	Issuer           string
+	MaxAttempts      int
+	AttemptWindow    time.Duration
+	BackupCodeCount  int
+}
+
+// getMFAEncryptionKey retrieves and validates the MFA encryption key
+func getMFAEncryptionKey() []byte {
+	keyStr := getEnv("MFA_ENCRYPTION_KEY", "")
+	if keyStr == "" {
+		return nil // MFA disabled if no key
+	}
+
+	key := []byte(keyStr)
+	if len(key) != 32 {
+		panic(fmt.Sprintf("MFA_ENCRYPTION_KEY must be exactly 32 bytes, got %d", len(key)))
+	}
+	return key
 }
 
 func Load() (*Config, error) {
@@ -94,11 +124,17 @@ func Load() (*Config, error) {
 			Env:             env,
 			LogLevel:        getEnv("LOG_LEVEL", "info"),
 			AllowedOrigins:  parseAllowedOrigins(env),
+			TrustedProxies:  parseTrustedProxies(),
+			ReadTimeout:     getEnvAsDuration("SERVER_READ_TIMEOUT", 15*time.Second),
+			WriteTimeout:    getEnvAsDuration("SERVER_WRITE_TIMEOUT", 15*time.Second),
+			IdleTimeout:     getEnvAsDuration("SERVER_IDLE_TIMEOUT", 60*time.Second),
 		},
 		Auth: AuthConfig{
 			JWTSecret:                   jwtSecret,
 			AccessTokenExpiry:           getEnvAsDuration("ACCESS_TOKEN_EXPIRY", 15*time.Minute),
 			RefreshTokenExpiry:          getEnvAsDuration("REFRESH_TOKEN_EXPIRY", 7*24*time.Hour),
+			MFATokenExpiry:              getEnvAsDuration("MFA_TOKEN_EXPIRY", 5*time.Minute),
+			TokenManagerTimeout:         getEnvAsDuration("TOKEN_MANAGER_TIMEOUT", 2*time.Second),
 			CleanupInterval:             getEnvAsDuration("TOKEN_CLEANUP_INTERVAL", 1*time.Hour),
 			MaxFailedAttemptsPerEmail:   getEnvAsInt("MAX_FAILED_ATTEMPTS_PER_EMAIL", 5),
 			EmailLockoutDuration:        getEnvAsDuration("EMAIL_LOCKOUT_DURATION", 15*time.Minute),
@@ -119,6 +155,14 @@ func Load() (*Config, error) {
 			TokenExpiryHours:     getEnvAsInt("EMAIL_VERIFICATION_TOKEN_EXPIRY_HOURS", 24),
 			CleanupIntervalHours: getEnvAsInt("EMAIL_VERIFICATION_CLEANUP_INTERVAL_HOURS", 24),
 			CleanupThresholdDays: getEnvAsInt("EMAIL_VERIFICATION_CLEANUP_DAYS_THRESHOLD", 30),
+			Required:             getBoolEnv("EMAIL_REQUIRED", true),
+		},
+		MFA: MFAConfig{
+			EncryptionKey:   getMFAEncryptionKey(),
+			Issuer:          getEnv("MFA_ISSUER", "Kamino"),
+			MaxAttempts:     getEnvAsInt("MFA_MAX_ATTEMPTS", 5),
+			AttemptWindow:   getEnvAsDuration("MFA_ATTEMPT_WINDOW", 15*time.Minute),
+			BackupCodeCount: 8,
 		},
 	}
 
@@ -200,6 +244,13 @@ func getEnvAsDuration(key string, defaultVal time.Duration) time.Duration {
 	return defaultVal
 }
 
+func getBoolEnv(key string, defaultVal bool) bool {
+	if value := os.Getenv(key); value != "" {
+		return strings.ToLower(value) == "true"
+	}
+	return defaultVal
+}
+
 func parseAllowedOrigins(env string) []string {
 	if env == "production" {
 		originsStr := getEnv("ALLOWED_ORIGINS", "")
@@ -224,4 +275,24 @@ func parseAllowedOrigins(env string) []string {
 		"http://127.0.0.1:5173",
 		"http://127.0.0.1:3001",
 	}
+}
+
+// parseTrustedProxies parses the TRUSTED_PROXIES environment variable
+// Expected format: comma-separated CIDR ranges (e.g., "10.0.0.0/8,172.16.0.0/12")
+func parseTrustedProxies() []string {
+	proxiesStr := getEnv("TRUSTED_PROXIES", "")
+	if proxiesStr == "" {
+		// Development: default to localhost
+		return []string{
+			"127.0.0.1/32",     // localhost
+			"::1/128",          // localhost IPv6
+			"169.254.169.254/32", // AWS metadata service (EC2 instances behind ALB)
+		}
+	}
+
+	proxies := strings.Split(proxiesStr, ",")
+	for i, proxy := range proxies {
+		proxies[i] = strings.TrimSpace(proxy)
+	}
+	return proxies
 }

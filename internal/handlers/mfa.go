@@ -13,6 +13,7 @@ import (
 	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/BradenHooton/kamino/internal/services"
 	pkgauth "github.com/BradenHooton/kamino/pkg/auth"
+	pkghttp "github.com/BradenHooton/kamino/pkg/http"
 )
 
 // MFAHandler handles MFA-related HTTP requests
@@ -20,15 +21,17 @@ type MFAHandler struct {
 	mfaService *services.MFAService
 	tm         *auth.TokenManager
 	userRepo   services.UserRepository
+	revokeRepo services.TokenRevocationRepository
 	logger     *slog.Logger
 }
 
 // NewMFAHandler creates a new MFA handler
-func NewMFAHandler(mfaService *services.MFAService, tm *auth.TokenManager, userRepo services.UserRepository, logger *slog.Logger) *MFAHandler {
+func NewMFAHandler(mfaService *services.MFAService, tm *auth.TokenManager, userRepo services.UserRepository, revokeRepo services.TokenRevocationRepository, logger *slog.Logger) *MFAHandler {
 	return &MFAHandler{
 		mfaService: mfaService,
 		tm:         tm,
 		userRepo:   userRepo,
+		revokeRepo: revokeRepo,
 		logger:     logger,
 	}
 }
@@ -37,25 +40,25 @@ func NewMFAHandler(mfaService *services.MFAService, tm *auth.TokenManager, userR
 func (h *MFAHandler) InitiateSetup(w http.ResponseWriter, r *http.Request) {
 	user := auth.GetUserFromContext(r)
 	if user == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Unauthorized")
 		return
 	}
 
 	var req InitiateMFASetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request")
 		return
 	}
 
 	if req.DeviceName == "" {
-		http.Error(w, "device_name is required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "device_name is required")
 		return
 	}
 
 	device, backupCodes, qrCode, err := h.mfaService.InitiateSetup(r.Context(), user.UserID, req.DeviceName, user.Email)
 	if err != nil {
 		h.logger.Error("failed to initiate MFA setup", slog.Any("error", err))
-		http.Error(w, "Setup failed", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Setup failed")
 		return
 	}
 
@@ -75,23 +78,23 @@ func (h *MFAHandler) InitiateSetup(w http.ResponseWriter, r *http.Request) {
 func (h *MFAHandler) VerifySetup(w http.ResponseWriter, r *http.Request) {
 	user := auth.GetUserFromContext(r)
 	if user == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Unauthorized")
 		return
 	}
 
 	var req VerifyMFASetupRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request")
 		return
 	}
 
 	if req.DeviceID == "" || req.Code == "" {
-		http.Error(w, "device_id and code are required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "device_id and code are required")
 		return
 	}
 
 	if len(req.Code) != 6 || !isNumeric(req.Code) {
-		http.Error(w, "code must be 6 digits", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "code must be 6 digits")
 		return
 	}
 
@@ -107,7 +110,7 @@ func (h *MFAHandler) VerifySetup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.logger.Warn("failed to verify MFA setup", slog.String("user_id", user.UserID), slog.Any("error", err))
-		http.Error(w, "Verification failed", statusCode)
+		pkghttp.WriteError(w, statusCode, "mfa_verification_failed", "Verification failed")
 		return
 	}
 
@@ -127,18 +130,18 @@ func (h *MFAHandler) VerifySetup(w http.ResponseWriter, r *http.Request) {
 func (h *MFAHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	user := auth.GetUserFromContext(r)
 	if user == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Unauthorized")
 		return
 	}
 
 	var req DisableMFARequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request")
 		return
 	}
 
 	if req.Password == "" {
-		http.Error(w, "password is required to disable MFA", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "password is required to disable MFA")
 		return
 	}
 
@@ -146,13 +149,13 @@ func (h *MFAHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	userRecord, err := h.userRepo.GetByID(r.Context(), user.UserID)
 	if err != nil {
 		h.logger.Error("failed to fetch user", slog.Any("error", err))
-		http.Error(w, "Authentication failed", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Authentication failed")
 		return
 	}
 
 	if err := pkgauth.ComparePassword(userRecord.PasswordHash, req.Password); err != nil {
 		h.logger.Warn("invalid password for MFA disable", slog.String("user_id", user.UserID))
-		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Invalid credentials")
 		return
 	}
 
@@ -160,7 +163,7 @@ func (h *MFAHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 	err = h.mfaService.DisableMFA(r.Context(), user.UserID)
 	if err != nil {
 		h.logger.Error("failed to disable MFA", slog.Any("error", err))
-		http.Error(w, "Failed to disable MFA", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Failed to disable MFA")
 		return
 	}
 
@@ -179,14 +182,14 @@ func (h *MFAHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 func (h *MFAHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 	user := auth.GetUserFromContext(r)
 	if user == nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Unauthorized")
 		return
 	}
 
 	status, err := h.mfaService.GetStatus(r.Context(), user.UserID)
 	if err != nil {
 		h.logger.Error("failed to get MFA status", slog.Any("error", err))
-		http.Error(w, "Failed to retrieve MFA status", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Failed to retrieve MFA status")
 		return
 	}
 
@@ -216,12 +219,18 @@ func (h *MFAHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 func (h *MFAHandler) VerifyMFACode(w http.ResponseWriter, r *http.Request) {
 	var req VerifyMFACodeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request")
 		return
 	}
 
 	if req.MFAToken == "" || req.Code == "" {
-		http.Error(w, "mfa_token and code are required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "mfa_token and code are required")
+		return
+	}
+
+	// Validate MFA code format (6 digits or 8-char backup code)
+	if !isValidMFACodeFormat(req.Code) {
+		pkghttp.WriteBadRequest(w, "Invalid code format")
 		return
 	}
 
@@ -229,7 +238,7 @@ func (h *MFAHandler) VerifyMFACode(w http.ResponseWriter, r *http.Request) {
 	claims, err := h.tm.ValidateToken(req.MFAToken)
 	if err != nil || claims.Type != "mfa" {
 		h.logger.Warn("invalid MFA token")
-		http.Error(w, "Invalid MFA token", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Invalid MFA token")
 		return
 	}
 
@@ -250,12 +259,12 @@ func (h *MFAHandler) VerifyMFACode(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.logger.Warn("MFA verification failed", slog.String("user_id", claims.UserID), slog.Any("error", err))
-		http.Error(w, "Authentication failed", statusCode)
+		pkghttp.WriteError(w, statusCode, "mfa_auth_failed", "Authentication failed")
 		return
 	}
 
 	if !success {
-		http.Error(w, "Authentication failed", http.StatusUnauthorized)
+		pkghttp.WriteUnauthorized(w, "Authentication failed")
 		return
 	}
 
@@ -263,22 +272,39 @@ func (h *MFAHandler) VerifyMFACode(w http.ResponseWriter, r *http.Request) {
 	accessToken, err := h.tm.GenerateAccessToken(claims.UserID, claims.Email)
 	if err != nil {
 		h.logger.Error("failed to generate access token", slog.Any("error", err))
-		http.Error(w, "Authentication failed", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Authentication failed")
 		return
 	}
 
 	refreshToken, err := h.tm.GenerateRefreshToken(claims.UserID, claims.Email)
 	if err != nil {
 		h.logger.Error("failed to generate refresh token", slog.Any("error", err))
-		http.Error(w, "Authentication failed", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Authentication failed")
 		return
+	}
+
+	// Revoke MFA token to prevent replay attacks
+	if err := h.revokeRepo.RevokeToken(
+		r.Context(),
+		claims.ID,              // JTI from MFA token
+		claims.UserID,
+		"mfa",                  // token type
+		claims.ExpiresAt.Time,  // expires_at from token
+		"mfa_verified",         // reason
+	); err != nil {
+		// Log but don't fail - tokens are already generated
+		// Failing here would be worse than allowing a small replay window
+		h.logger.Error("failed to revoke MFA token",
+			slog.String("user_id", claims.UserID),
+			slog.String("jti", claims.ID),
+			slog.Any("error", err))
 	}
 
 	// Fetch user for response
 	userRecord, err := h.userRepo.GetByID(r.Context(), claims.UserID)
 	if err != nil {
 		h.logger.Error("failed to fetch user", slog.Any("error", err))
-		http.Error(w, "Authentication failed", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Authentication failed")
 		return
 	}
 
@@ -336,4 +362,37 @@ func getClientIP(r *http.Request) string {
 
 	// Fall back to remote address
 	return strings.Split(r.RemoteAddr, ":")[0]
+}
+
+// isValidMFACodeFormat validates MFA code format before service processing
+// Returns true if code is either:
+//   - 6 digits (TOTP code)
+//   - 8 alphanumeric characters from backup code charset (excludes 0,1,I,L,O)
+func isValidMFACodeFormat(code string) bool {
+	// TOTP codes: exactly 6 digits
+	if len(code) == 6 {
+		for _, ch := range code {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+		return true
+	}
+
+	// Backup codes: exactly 8 characters from charset "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+	if len(code) == 8 {
+		// Allowed: digits 2-9 and uppercase A-Z (excluding 0,1,I,L,O)
+		for _, ch := range code {
+			if !((ch >= '2' && ch <= '9') ||
+				(ch >= 'A' && ch <= 'H') ||
+				(ch >= 'J' && ch <= 'K') ||
+				(ch >= 'M' && ch <= 'N') ||
+				(ch >= 'P' && ch <= 'Z')) {
+				return false
+			}
+		}
+		return true
+	}
+
+	return false
 }

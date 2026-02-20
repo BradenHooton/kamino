@@ -8,8 +8,9 @@ import (
 )
 
 // CSRFProtection middleware validates CSRF tokens on state-changing requests
-// Only applies to POST, PUT, DELETE, PATCH methods
-// Extracts CSRF token from X-CSRF-Token header or cookie
+// Applies to ALL state-changing requests (POST, PUT, DELETE, PATCH):
+// - Authenticated requests: require valid CSRF token
+// - Public requests: require CSRF token (double-submit cookie pattern for public endpoints)
 func CSRFProtection(csrfManager *auth.CSRFTokenManager, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -21,14 +22,8 @@ func CSRFProtection(csrfManager *auth.CSRFTokenManager, logger *slog.Logger) fun
 
 			// Extract user ID from context (set by auth middleware)
 			userID := auth.GetUserFromContext(r)
-			if userID == nil {
-				// Not authenticated - CSRF protection only for authenticated users
-				// Unauthenticated state-changing requests don't need CSRF protection
-				next.ServeHTTP(w, r)
-				return
-			}
 
-			// Extract CSRF token from header first, then cookie
+			// Extract CSRF token from header first, then cookie (for all requests)
 			csrfToken := r.Header.Get("X-CSRF-Token")
 			if csrfToken == "" {
 				// Try to get from cookie
@@ -38,22 +33,41 @@ func CSRFProtection(csrfManager *auth.CSRFTokenManager, logger *slog.Logger) fun
 			}
 
 			if csrfToken == "" {
-				logger.Warn("CSRF token missing in request",
-					slog.String("method", r.Method),
-					slog.String("path", r.RequestURI),
-					slog.String("user_id", userID.UserID))
+				if userID != nil {
+					logger.Warn("CSRF token missing in request",
+						slog.String("method", r.Method),
+						slog.String("path", r.RequestURI),
+						slog.String("user_id", userID.UserID))
+				} else {
+					logger.Warn("CSRF token missing in request (public endpoint)",
+						slog.String("method", r.Method),
+						slog.String("path", r.RequestURI))
+				}
 				http.Error(w, "CSRF token missing", http.StatusForbidden)
 				return
 			}
 
-			// Validate CSRF token
-			if !csrfManager.ValidateToken(csrfToken, userID.UserID) {
-				logger.Warn("CSRF token validation failed",
-					slog.String("method", r.Method),
-					slog.String("path", r.RequestURI),
-					slog.String("user_id", userID.UserID))
-				http.Error(w, "CSRF token invalid", http.StatusForbidden)
-				return
+			// For authenticated requests, validate CSRF token against user ID
+			if userID != nil {
+				if !csrfManager.ValidateToken(csrfToken, userID.UserID) {
+					logger.Warn("CSRF token validation failed",
+						slog.String("method", r.Method),
+						slog.String("path", r.RequestURI),
+						slog.String("user_id", userID.UserID))
+					http.Error(w, "CSRF token invalid", http.StatusForbidden)
+					return
+				}
+			} else {
+				// For unauthenticated requests (public endpoints), use double-submit cookie validation
+				// Verify that the token matches the CSRF cookie value
+				csrfCookie, err := r.Cookie("csrf_token")
+				if err != nil || csrfCookie.Value != csrfToken {
+					logger.Warn("CSRF token validation failed for public endpoint",
+						slog.String("method", r.Method),
+						slog.String("path", r.RequestURI))
+					http.Error(w, "CSRF token invalid", http.StatusForbidden)
+					return
+				}
 			}
 
 			// CSRF token valid, continue

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/BradenHooton/kamino/internal/models"
+	pkghttp "github.com/BradenHooton/kamino/pkg/http"
 )
 
 // contextKey is a custom type for context keys
@@ -15,6 +16,8 @@ type contextKey string
 const (
 	// UserContextKey is the key for storing user claims in context
 	UserContextKey contextKey = "user"
+	// TokenContextKey is the key for storing the raw JWT token string in context
+	TokenContextKey contextKey = "token"
 )
 
 // TokenRevocationChecker defines the interface for checking if tokens are revoked
@@ -40,14 +43,14 @@ func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevoc
 			// Extract token from Authorization header
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				http.Error(w, "missing authorization header", http.StatusUnauthorized)
+				pkghttp.WriteUnauthorized(w, "missing authorization header")
 				return
 			}
 
 			// Parse Bearer token
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				http.Error(w, "invalid authorization header format", http.StatusUnauthorized)
+				pkghttp.WriteUnauthorized(w, "invalid authorization header format")
 				return
 			}
 
@@ -56,13 +59,13 @@ func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevoc
 			// Validate token
 			claims, err := tm.ValidateToken(tokenString)
 			if err != nil {
-				http.Error(w, "invalid or expired token", http.StatusUnauthorized)
+				pkghttp.WriteUnauthorized(w, "invalid or expired token")
 				return
 			}
 
 			// Reject refresh tokens for API access (they should only be used with /auth/refresh)
 			if claims.Type == "refresh" {
-				http.Error(w, "refresh tokens cannot be used for API access", http.StatusUnauthorized)
+				pkghttp.WriteUnauthorized(w, "refresh tokens cannot be used for API access")
 				return
 			}
 
@@ -73,20 +76,21 @@ func AuthMiddlewareWithRevocation(tm *TokenManager, revocationChecker TokenRevoc
 					// Handle revocation check errors based on configuration
 					if revocationConfig.FailClosed {
 						// Fail closed: deny access if we can't verify revocation status
-						http.Error(w, "unable to verify token status", http.StatusServiceUnavailable)
+						pkghttp.WriteError(w, http.StatusServiceUnavailable, "service_unavailable", "unable to verify token status")
 						return
 					}
 					// Fail open: allow access if revocation check fails (for availability)
 					// Invalid/expired tokens still fail closed (handled above)
 				}
 				if revoked {
-					http.Error(w, "token has been revoked", http.StatusUnauthorized)
+					pkghttp.WriteUnauthorized(w, "token has been revoked")
 					return
 				}
 			}
 
-			// Inject claims into context
+			// Inject claims and token into context
 			ctx := context.WithValue(r.Context(), UserContextKey, claims)
+			ctx = context.WithValue(ctx, TokenContextKey, tokenString)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
@@ -99,7 +103,7 @@ func RequireRole(userRepo UserRepository, role string) func(next http.Handler) h
 			// Get user claims from context (must be used after AuthMiddleware)
 			claims := GetUserFromContext(r)
 			if claims == nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				pkghttp.WriteUnauthorized(w, "unauthorized")
 				return
 			}
 
@@ -107,16 +111,16 @@ func RequireRole(userRepo UserRepository, role string) func(next http.Handler) h
 			user, err := userRepo.GetByID(r.Context(), claims.UserID)
 			if err != nil {
 				if errors.Is(err, models.ErrNotFound) {
-					http.Error(w, "user not found", http.StatusUnauthorized)
+					pkghttp.WriteUnauthorized(w, "user not found")
 					return
 				}
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				pkghttp.WriteInternalError(w, "internal server error")
 				return
 			}
 
 			// Check if user has required role
 			if user.Role != role {
-				http.Error(w, "forbidden: insufficient permissions", http.StatusForbidden)
+				pkghttp.WriteForbidden(w, "forbidden: insufficient permissions")
 				return
 			}
 
@@ -133,6 +137,13 @@ func GetUserFromContext(r *http.Request) *models.TokenClaims {
 		return nil
 	}
 	return claims
+}
+
+// GetTokenFromContext extracts the raw JWT token string from request context
+// This token was validated and added to context by AuthMiddleware
+func GetTokenFromContext(r *http.Request) string {
+	token, _ := r.Context().Value(TokenContextKey).(string)
+	return token
 }
 
 // UserRepository interface for fetching user data (reuse existing interface)

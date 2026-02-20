@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	BcryptCost      = 12  // Good balance between security and performance
+	BcryptCost      = 14  // OWASP 2026 recommendation - stronger than cost 12 (Feb 2026)
 	TokenKeyLength  = 32  // 256 bits
 	MinPasswordLen  = 8
 	MaxPasswordLen  = 128

@@ -8,6 +8,7 @@ import (
 
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/models"
+	pkghttp "github.com/BradenHooton/kamino/pkg/http"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -54,6 +55,7 @@ type UserResponse struct {
 	Email         string `json:"email"`
 	Name          string `json:"name"`
 	EmailVerified bool   `json:"email_verified"`
+	MFAEnabled    bool   `json:"mfa_enabled"`
 	Role          string `json:"role"`
 	CreatedAt     string `json:"created_at"`
 	UpdatedAt     string `json:"updated_at"`
@@ -72,6 +74,7 @@ func userModelToResponse(user *models.User) *UserResponse {
 		Email:         user.Email,
 		Name:          user.Name,
 		EmailVerified: user.EmailVerified,
+		MFAEnabled:    user.MFAEnabled,
 		Role:          user.Role,
 		CreatedAt:     user.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		UpdatedAt:     user.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
@@ -102,23 +105,23 @@ func (h *UserHandler) RegisterRoutes(router chi.Router) {
 func (h *UserHandler) GetUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	if userID == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "User ID is required")
 		return
 	}
 
 	// Check resource-level authorization
 	if err := h.checkUserAccess(r, userID); err != nil {
-		http.Error(w, "Forbidden: you cannot access this resource", http.StatusForbidden)
+		pkghttp.WriteForbidden(w, "Forbidden: you cannot access this resource")
 		return
 	}
 
 	user, err := h.service.GetUserByID(userID)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
-			http.Error(w, "User not found", http.StatusNotFound)
+			pkghttp.WriteNotFound(w, "User not found")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -144,7 +147,7 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	if l := r.URL.Query().Get("limit"); l != "" {
 		_, err := parseIntParam(l, &limit, 1, 100)
 		if err != nil {
-			http.Error(w, "Invalid limit parameter", http.StatusBadRequest)
+			pkghttp.WriteBadRequest(w, "Invalid limit parameter")
 			return
 		}
 	}
@@ -152,14 +155,14 @@ func (h *UserHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
 	if o := r.URL.Query().Get("offset"); o != "" {
 		_, err := parseIntParam(o, &offset, 0, 10000)
 		if err != nil {
-			http.Error(w, "Invalid offset parameter", http.StatusBadRequest)
+			pkghttp.WriteBadRequest(w, "Invalid offset parameter")
 			return
 		}
 	}
 
 	users, err := h.service.ListUsers(limit, offset)
 	if err != nil {
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -191,13 +194,13 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	var req CreateUserRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
 	}
 
@@ -219,15 +222,15 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	createdUser, err := h.service.CreateUser(user, req.Password)
 	if err != nil {
 		if errors.Is(err, models.ErrConflict) {
-			http.Error(w, "User already exists", http.StatusConflict)
+			pkghttp.WriteConflict(w, "User already exists")
 			return
 		}
 		// Check if it's a password validation error
 		if strings.Contains(err.Error(), "password requirements not met") {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			pkghttp.WriteBadRequest(w, err.Error())
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -252,27 +255,55 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	if userID == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "User ID is required")
 		return
 	}
 
 	// Check resource-level authorization
 	if err := h.checkUserAccess(r, userID); err != nil {
-		http.Error(w, "Forbidden: you cannot access this resource", http.StatusForbidden)
+		pkghttp.WriteForbidden(w, "Forbidden: you cannot access this resource")
 		return
 	}
 
 	var req UpdateUserRequest
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "Invalid request body")
 		return
 	}
 
 	// Validate request
 	if err := ValidateRequest(req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, err.Error())
 		return
+	}
+
+	// CRITICAL SECURITY CHECK: Validate role change authorization
+	if req.Role != "" {
+		claims := auth.GetUserFromContext(r)
+		if claims == nil {
+			pkghttp.WriteForbidden(w, "Unauthorized")
+			return
+		}
+
+		// Get the requesting user to check their role
+		requestingUser, err := h.service.GetUserByID(claims.UserID)
+		if err != nil {
+			pkghttp.WriteInternalError(w, "Internal server error")
+			return
+		}
+
+		// Only admins can change roles
+		if requestingUser.Role != "admin" {
+			pkghttp.WriteForbidden(w, "Only administrators can change user roles")
+			return
+		}
+
+		// Admins cannot change their own role
+		if claims.UserID == userID {
+			pkghttp.WriteForbidden(w, "Administrators cannot change their own role")
+			return
+		}
 	}
 
 	// Create update model with only provided fields
@@ -292,10 +323,10 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	updatedUser, err := h.service.UpdateUser(userID, user)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
-			http.Error(w, "User not found", http.StatusNotFound)
+			pkghttp.WriteNotFound(w, "User not found")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 
@@ -314,17 +345,17 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "id")
 	if userID == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+		pkghttp.WriteBadRequest(w, "User ID is required")
 		return
 	}
 
 	err := h.service.DeleteUser(userID)
 	if err != nil {
 		if errors.Is(err, models.ErrNotFound) {
-			http.Error(w, "User not found", http.StatusNotFound)
+			pkghttp.WriteNotFound(w, "User not found")
 			return
 		}
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		pkghttp.WriteInternalError(w, "Internal server error")
 		return
 	}
 

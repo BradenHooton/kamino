@@ -18,6 +18,10 @@ type CSRFTokenManager struct {
 	validTokens map[string]*csrfTokenEntry // token -> entry (userID + expiry)
 	mu          sync.RWMutex
 	tokenTTL    time.Duration
+
+	// Shutdown signaling
+	stopChan chan struct{}
+	stopped  bool
 }
 
 // NewCSRFTokenManager creates a new CSRF token manager
@@ -25,6 +29,7 @@ func NewCSRFTokenManager() *CSRFTokenManager {
 	manager := &CSRFTokenManager{
 		validTokens: make(map[string]*csrfTokenEntry),
 		tokenTTL:    15 * time.Minute, // CSRF tokens valid for 15 minutes
+		stopChan:    make(chan struct{}),
 	}
 
 	// Start cleanup goroutine to remove expired tokens
@@ -87,19 +92,40 @@ func (m *CSRFTokenManager) RevokeToken(token string) {
 	m.mu.Unlock()
 }
 
+// Stop gracefully shuts down the CSRF token manager
+func (m *CSRFTokenManager) Stop() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.stopped {
+		return nil // Already stopped
+	}
+
+	m.stopped = true
+	close(m.stopChan)
+	return nil
+}
+
 // cleanupExpiredTokens periodically removes expired tokens
 func (m *CSRFTokenManager) cleanupExpiredTokens() {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		m.mu.Lock()
-		now := time.Now()
-		for token, entry := range m.validTokens {
-			if now.After(entry.expiry) {
-				delete(m.validTokens, token)
+	for {
+		select {
+		case <-m.stopChan:
+			// Graceful shutdown received
+			return
+		case <-ticker.C:
+			// Perform cleanup
+			m.mu.Lock()
+			now := time.Now()
+			for token, entry := range m.validTokens {
+				if now.After(entry.expiry) {
+					delete(m.validTokens, token)
+				}
 			}
+			m.mu.Unlock()
 		}
-		m.mu.Unlock()
 	}
 }

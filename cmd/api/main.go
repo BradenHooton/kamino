@@ -22,6 +22,7 @@ import (
 	"github.com/BradenHooton/kamino/internal/routes"
 	"github.com/BradenHooton/kamino/internal/services"
 	pkgauth "github.com/BradenHooton/kamino/pkg/auth"
+	pkghttp "github.com/BradenHooton/kamino/pkg/http"
 	pkglogger "github.com/BradenHooton/kamino/pkg/logger"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -53,15 +54,19 @@ func main() {
 	revokeRepo := repositories.NewTokenRevocationRepository(db)
 	loginAttemptRepo := repositories.NewLoginAttemptRepository(db)
 	emailVerificationRepo := repositories.NewEmailVerificationRepository(db)
+	mfaDeviceRepo := repositories.NewMFADeviceRepository(db.Pool)
+	mfaAttemptRepo := repositories.NewMFAAttemptRepository(db.Pool)
 
 	// Initialize cleanup manager
-	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, logger, cfg.Auth.CleanupInterval)
+	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, logger, cfg.Auth.CleanupInterval)
 
 	// Initialize token manager
 	tokenManager := auth.NewTokenManager(
 		cfg.Auth.JWTSecret,
 		cfg.Auth.AccessTokenExpiry,
 		cfg.Auth.RefreshTokenExpiry,
+		cfg.Auth.MFATokenExpiry,
+		cfg.Auth.TokenManagerTimeout,
 	)
 
 	// Enable composite signing with per-user TokenKey
@@ -93,34 +98,103 @@ func main() {
 	// CSRF token manager
 	csrfManager := auth.NewCSRFTokenManager()
 
-	// AWS SES email service
-	emailService, err := services.NewAWSSESEmailService(
-		cfg.Email.AWSRegion,
-		cfg.Email.FromAddress,
-		cfg.Email.VerificationURLBase,
-		logger,
-	)
-	if err != nil {
-		logger.Error("failed to initialize email service", slog.Any("error", err))
-		os.Exit(1)
+	// AWS SES email service (conditional based on EMAIL_REQUIRED flag)
+	var emailService services.EmailService
+	if cfg.Email.Required {
+		// Email verification required - fail hard if AWS SES unavailable
+		var err error
+		emailService, err = services.NewAWSSESEmailService(
+			cfg.Email.AWSRegion,
+			cfg.Email.FromAddress,
+			cfg.Email.VerificationURLBase,
+			logger,
+		)
+		if err != nil {
+			logger.Error("failed to initialize email service - email verification is required",
+				slog.Any("error", err),
+				slog.String("aws_region", cfg.Email.AWSRegion),
+				slog.String("from_address", cfg.Email.FromAddress))
+			os.Exit(1)
+		}
+		logger.Info("email verification enabled",
+			slog.String("provider", "AWS SES"),
+			slog.String("from_address", cfg.Email.FromAddress))
+	} else {
+		// Email verification disabled - graceful degradation
+		logger.Warn("email verification DISABLED - registrations will NOT require email verification",
+			slog.String("env_var", "EMAIL_REQUIRED=false"))
+		emailService = nil
 	}
 
-	// Email verification service
-	emailVerificationService := services.NewEmailVerificationService(
-		emailVerificationRepo,
-		userRepo,
-		emailService,
-		logger,
-		time.Duration(cfg.Email.TokenExpiryHours)*time.Hour,
-	)
+	// Email verification service (only if email service exists)
+	var emailVerificationService *services.EmailVerificationService
+	if emailService != nil {
+		emailVerificationService = services.NewEmailVerificationService(
+			emailVerificationRepo,
+			userRepo,
+			emailService,
+			logger,
+			time.Duration(cfg.Email.TokenExpiryHours)*time.Hour,
+		)
+	} else {
+		emailVerificationService = nil
+	}
+
+	// TOTP Manager (only if MFA encryption key is configured)
+	var totpManager *auth.TOTPManager
+	var mfaService *services.MFAService
+	var mfaHandler *handlers.MFAHandler
+
+	if len(cfg.MFA.EncryptionKey) == 32 {
+		var err error
+		totpManager, err = auth.NewTOTPManager(cfg.MFA.EncryptionKey, cfg.MFA.Issuer)
+		if err != nil {
+			logger.Error("failed to create TOTP manager", slog.Any("error", err))
+			os.Exit(1)
+		}
+
+		// MFA Service
+		mfaConfig := services.MFAConfig{
+			MaxAttempts:     cfg.MFA.MaxAttempts,
+			AttemptWindow:   cfg.MFA.AttemptWindow,
+			BackupCodeCount: cfg.MFA.BackupCodeCount,
+		}
+		mfaService = services.NewMFAService(
+			mfaDeviceRepo,
+			mfaAttemptRepo,
+			userRepo,
+			totpManager,
+			logger,
+			mfaConfig,
+		)
+
+		// MFA Handler
+		mfaHandler = handlers.NewMFAHandler(mfaService, tokenManager, userRepo, revokeRepo, logger)
+
+		logger.Info("MFA enabled", slog.String("issuer", cfg.MFA.Issuer))
+	} else {
+		logger.Warn("MFA disabled - no encryption key configured")
+	}
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, logger)
 	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
 
-	// Initialize handlers
+	// Initialize handlers with IP configuration
+	ipConfig := &pkghttp.IPConfig{
+		TrustedProxies: cfg.Server.TrustedProxies,
+	}
 	userHandler := handlers.NewUserHandler(userService)
-	authHandler := handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService)
+
+	// Auth handler - with or without email verification
+	var authHandler *handlers.AuthHandler
+	if emailVerificationService != nil {
+		authHandler = handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService, ipConfig)
+		logger.Info("auth handler initialized with email verification")
+	} else {
+		authHandler = handlers.NewAuthHandler(authService, ipConfig)
+		logger.Warn("auth handler initialized WITHOUT email verification")
+	}
 
 	// Bootstrap first admin user if configured
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -144,7 +218,7 @@ func main() {
 	router.Use(middleware.Timeout(60 * time.Second))
 
 	// Register routes
-	routes.RegisterRoutes(router, userHandler, authHandler, tokenManager, userRepo, revokeRepo, csrfManager, logger)
+	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, tokenManager, userRepo, revokeRepo, csrfManager, logger)
 
 	// Health check with database
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -167,9 +241,9 @@ func main() {
 	server := &http.Server{
 		Addr:         ":" + cfg.Server.Port,
 		Handler:      router,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  cfg.Server.ReadTimeout,
+		WriteTimeout: cfg.Server.WriteTimeout,
+		IdleTimeout:  cfg.Server.IdleTimeout,
 	}
 
 	// Start cleanup task
@@ -196,6 +270,11 @@ func main() {
 
 	cleanupCancel()
 	cleanupManager.Stop()
+
+	// Stop CSRF manager
+	if err := csrfManager.Stop(); err != nil {
+		logger.Error("error stopping CSRF manager", slog.Any("error", err))
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
