@@ -18,10 +18,11 @@ type TokenSecrets struct {
 }
 
 type TokenClaims struct {
-    Type        string `json:"type"`
-    UserID      string `json:"user_id"`
-    Email       string `json:"email,omitempty"`
-    Refreshable bool   `json:"refreshable,omitempty"`
+    Type        string   `json:"type"`
+    UserID      string   `json:"user_id"`
+    Email       string   `json:"email,omitempty"`
+    Refreshable bool     `json:"refreshable,omitempty"`
+    Scopes      []string `json:"scopes,omitempty"` // For API key authentication
     jwt.RegisteredClaims
 }
 

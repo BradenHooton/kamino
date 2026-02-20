@@ -11,6 +11,7 @@ import (
 	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/BradenHooton/kamino/internal/services"
 	pkghttp "github.com/BradenHooton/kamino/pkg/http"
+	"github.com/google/uuid"
 )
 
 // AuthServiceInterface defines the interface for auth business logic
@@ -32,24 +33,27 @@ type EmailVerificationServiceInterface interface {
 
 // AuthHandler handles authentication-related HTTP requests
 type AuthHandler struct {
-	service                      AuthServiceInterface
-	emailVerificationService     EmailVerificationServiceInterface
-	ipConfig                     *pkghttp.IPConfig
+	service                  AuthServiceInterface
+	emailVerificationService EmailVerificationServiceInterface
+	auditService             *services.AuditService
+	ipConfig                 *pkghttp.IPConfig
 }
 
 // NewAuthHandler creates a new AuthHandler
-func NewAuthHandler(service AuthServiceInterface, ipConfig *pkghttp.IPConfig) *AuthHandler {
+func NewAuthHandler(service AuthServiceInterface, ipConfig *pkghttp.IPConfig, auditService *services.AuditService) *AuthHandler {
 	return &AuthHandler{
-		service:  service,
-		ipConfig: ipConfig,
+		service:      service,
+		auditService: auditService,
+		ipConfig:     ipConfig,
 	}
 }
 
 // NewAuthHandlerWithEmailVerification creates a new AuthHandler with email verification support
-func NewAuthHandlerWithEmailVerification(service AuthServiceInterface, emailVerificationService EmailVerificationServiceInterface, ipConfig *pkghttp.IPConfig) *AuthHandler {
+func NewAuthHandlerWithEmailVerification(service AuthServiceInterface, emailVerificationService EmailVerificationServiceInterface, ipConfig *pkghttp.IPConfig, auditService *services.AuditService) *AuthHandler {
 	return &AuthHandler{
 		service:                  service,
 		emailVerificationService: emailVerificationService,
+		auditService:             auditService,
 		ipConfig:                 ipConfig,
 	}
 }
@@ -124,6 +128,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	// Authenticate user
 	authResp, err := h.service.Login(r.Context(), req.Email, req.Password, ipAddress, userAgent)
 	if err != nil {
+		// Log failed authentication attempt
+		if h.auditService != nil {
+			reason := err.Error()
+			_ = h.auditService.LogAuthEvent(r.Context(), models.AuditEventTypeLogin, nil, models.AuditActionAccess, false, &reason, &ipAddress, &userAgent, models.AuditMetadata{
+				"email": req.Email,
+			})
+		}
+
 		switch {
 		case errors.Is(err, models.ErrUnauthorized):
 			pkghttp.WriteUnauthorized(w, "Authentication failed")
@@ -140,6 +152,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 			pkghttp.WriteInternalError(w, "Internal server error")
 		}
 		return
+	}
+
+	// Log successful login
+	if h.auditService != nil {
+		userID := authResp.User.ID
+		_ = h.auditService.LogAuthEvent(r.Context(), models.AuditEventTypeLogin, parseUUID(userID), models.AuditActionAccess, true, nil, &ipAddress, &userAgent, models.AuditMetadata{
+			"email": req.Email,
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -447,4 +467,15 @@ func (h *AuthHandler) VerificationStatus(w http.ResponseWriter, r *http.Request)
 		EmailVerified:       isVerified,
 		VerificationRequired: !isVerified,
 	})
+}
+
+// Helper functions
+
+// parseUUID converts a string UUID to a *uuid.UUID, returning nil if parsing fails
+func parseUUID(s string) *uuid.UUID {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return nil
+	}
+	return &id
 }

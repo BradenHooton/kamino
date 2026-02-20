@@ -56,9 +56,11 @@ func main() {
 	emailVerificationRepo := repositories.NewEmailVerificationRepository(db)
 	mfaDeviceRepo := repositories.NewMFADeviceRepository(db.Pool)
 	mfaAttemptRepo := repositories.NewMFAAttemptRepository(db.Pool)
+	auditLogRepo := repositories.NewAuditLogRepository(db)
+	apiKeyRepo := repositories.NewAPIKeyRepository(db)
 
 	// Initialize cleanup manager
-	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, logger, cfg.Auth.CleanupInterval)
+	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, auditLogRepo, apiKeyRepo, logger, cfg.Auth.CleanupInterval)
 
 	// Initialize token manager
 	tokenManager := auth.NewTokenManager(
@@ -179,20 +181,27 @@ func main() {
 	// Initialize services
 	userService := services.NewUserService(userRepo, logger)
 	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
+	auditService := services.NewAuditService(auditLogRepo, logger, &cfg.Audit)
+
+	// API Key Manager and Service
+	apiKeyManager := auth.NewAPIKeyManager()
+	apiKeyService := services.NewAPIKeyService(apiKeyRepo, apiKeyManager, auditService, logger)
 
 	// Initialize handlers with IP configuration
 	ipConfig := &pkghttp.IPConfig{
 		TrustedProxies: cfg.Server.TrustedProxies,
 	}
 	userHandler := handlers.NewUserHandler(userService)
+	auditHandler := handlers.NewAuditHandler(auditService, userService, auditLogRepo)
+	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService, userService, auditService)
 
 	// Auth handler - with or without email verification
 	var authHandler *handlers.AuthHandler
 	if emailVerificationService != nil {
-		authHandler = handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService, ipConfig)
+		authHandler = handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService, ipConfig, auditService)
 		logger.Info("auth handler initialized with email verification")
 	} else {
-		authHandler = handlers.NewAuthHandler(authService, ipConfig)
+		authHandler = handlers.NewAuthHandler(authService, ipConfig, auditService)
 		logger.Warn("auth handler initialized WITHOUT email verification")
 	}
 
@@ -217,8 +226,8 @@ func main() {
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.Timeout(60 * time.Second))
 
-	// Register routes
-	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, tokenManager, userRepo, revokeRepo, csrfManager, logger)
+	// Register routes (with API key validator for audit logging)
+	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, apiKeyHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService)
 
 	// Health check with database
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {

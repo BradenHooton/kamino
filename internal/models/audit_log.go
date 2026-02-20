@@ -10,13 +10,15 @@ import (
 
 // Event types for audit logging
 const (
-	AuditEventTypeLogin      = "login"
-	AuditEventTypeLogout     = "logout"
-	AuditEventTypeRegister   = "register"
-	AuditEventTypeRoleChange = "role_change"
-	AuditEventTypeMFASetup   = "mfa_setup"
-	AuditEventTypeMFADisable = "mfa_disable"
-	AuditEventTypeAPIKeyOp   = "api_key_operation"
+	AuditEventTypeLogin        = "login"
+	AuditEventTypeLogout       = "logout"
+	AuditEventTypeRegister     = "register"
+	AuditEventTypeRoleChange   = "role_change"
+	AuditEventTypeMFASetup     = "mfa_setup"
+	AuditEventTypeMFADisable   = "mfa_disable"
+	AuditEventTypeAPIKeyOp     = "api_key_operation"
+	AuditEventTypeAPIKeyUsage  = "api_key_usage"
+	AuditEventTypeMFARecovery  = "mfa_recovery"
 )
 
 // Resource types
@@ -94,4 +96,22 @@ func (am *AuditMetadata) UnmarshalJSON(data []byte) error {
 	}
 	*am = AuditMetadata(m)
 	return nil
+}
+
+// NewAPIKeyUsageMetadata creates metadata for API key usage audit events
+func NewAPIKeyUsageMetadata(endpoint, method string, requiredScopes []string, statusCode int, keyPrefix string, ipAddress, userAgent *string) AuditMetadata {
+	metadata := AuditMetadata{
+		"endpoint":          endpoint,
+		"method":            method,
+		"required_scopes":   requiredScopes,
+		"status_code":       statusCode,
+		"key_prefix":        keyPrefix,
+	}
+	if ipAddress != nil {
+		metadata["ip_address"] = *ipAddress
+	}
+	if userAgent != nil {
+		metadata["user_agent"] = *userAgent
+	}
+	return metadata
 }

@@ -190,3 +190,39 @@ func (r *AuditLogRepository) CountByUserID(ctx context.Context, userID uuid.UUID
 
 	return count, nil
 }
+
+// GetByAPIKeyID retrieves all API key usage logs for a specific API key
+func (r *AuditLogRepository) GetByAPIKeyID(ctx context.Context, keyID string, limit int, offset int) ([]*models.AuditLog, error) {
+	query := `
+		SELECT id, event_type, actor_id, target_id, resource_type, resource_id,
+		       action, success, failure_reason, ip_address, user_agent, metadata, created_at
+		FROM audit_logs
+		WHERE event_type = $1 AND resource_id = $2
+		ORDER BY created_at DESC
+		LIMIT $3 OFFSET $4
+	`
+
+	rows, err := r.pool.Query(ctx, query, models.AuditEventTypeAPIKeyUsage, keyID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query api key usage logs: %w", err)
+	}
+
+	return scanAuditLogRows(rows)
+}
+
+// CountByAPIKeyID counts API key usage events for a specific API key
+func (r *AuditLogRepository) CountByAPIKeyID(ctx context.Context, keyID string) (int64, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM audit_logs
+		WHERE event_type = $1 AND resource_id = $2
+	`
+
+	var count int64
+	err := r.pool.QueryRow(ctx, query, models.AuditEventTypeAPIKeyUsage, keyID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count api key usage logs: %w", err)
+	}
+
+	return count, nil
+}

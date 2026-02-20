@@ -25,7 +25,7 @@ func TestLogin_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/login", handlers.LoginRequest{
 		Email:    "user@example.com",
 		Password: "password123",
@@ -47,7 +47,7 @@ func TestLogin_AuthenticationFailed(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/login", handlers.LoginRequest{
 		Email:    "user@example.com",
 		Password: "wrongpassword",
@@ -66,7 +66,7 @@ func TestLogin_RateLimitExceeded(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/login", handlers.LoginRequest{
 		Email:    "user@example.com",
 		Password: "password123",
@@ -95,7 +95,7 @@ func TestLogin_AccountStatusErrors_AntiEnumeration(t *testing.T) {
 				},
 			}
 
-			handler := handlers.NewAuthHandler(mockAuth, nil)
+			handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 			req := handlers.NewTestRequest(t, "POST", "/auth/login", handlers.LoginRequest{
 				Email:    "user@example.com",
 				Password: "password123",
@@ -123,7 +123,7 @@ func TestRegister_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/register", handlers.RegisterRequest{
 		Email:    "newuser@example.com",
 		Password: "securePassword123!",
@@ -148,7 +148,7 @@ func TestRegister_DuplicateEmail_AntiEnumeration(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/register", handlers.RegisterRequest{
 		Email:    "existing@example.com",
 		Password: "securePassword123!",
@@ -175,7 +175,7 @@ func TestRefreshToken_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/refresh", handlers.RefreshTokenRequest{
 		RefreshToken: "refresh_token_123",
 	})
@@ -196,7 +196,7 @@ func TestRefreshToken_InvalidToken(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/refresh", handlers.RefreshTokenRequest{
 		RefreshToken: "invalid_token",
 	})
@@ -215,7 +215,7 @@ func TestLogout_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/logout", nil)
 	// Add user claims and token to context (simulates middleware behavior)
 	req = addTokenToContext(req, "access_token_123", "user123", "user@example.com")
@@ -245,7 +245,7 @@ func TestLogoutAll_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/logout-all", nil)
 	req = handlers.WithAuthContext(req, "user123", "user@example.com")
 
@@ -257,7 +257,7 @@ func TestLogoutAll_Success(t *testing.T) {
 
 func TestLogoutAll_Unauthorized(t *testing.T) {
 	mockAuth := &handlers.MockAuthService{}
-	handler := handlers.NewAuthHandler(mockAuth, nil)
+	handler := handlers.NewAuthHandler(mockAuth, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/logout-all", nil)
 	// No auth context
 
@@ -275,7 +275,7 @@ func TestVerifyEmail_Success(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/verify-email", handlers.VerifyEmailRequest{
 		Token: "verification_token_123",
 	})
@@ -298,7 +298,7 @@ func TestVerifyEmail_InvalidToken(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 	req := handlers.NewTestRequest(t, "POST", "/auth/verify-email", handlers.VerifyEmailRequest{
 		Token: "invalid_token",
 	})
@@ -337,7 +337,7 @@ func TestResendVerification_GenericResponse_AntiEnumeration(t *testing.T) {
 				},
 			}
 
-			handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+			handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 			req := handlers.NewTestRequest(t, "POST", "/auth/resend-verification", handlers.ResendVerificationRequest{
 				Email: tc.email,
 			})
@@ -362,7 +362,7 @@ func TestVerificationStatus_Verified(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 	req := handlers.NewTestRequest(t, "GET", "/auth/verification-status", nil)
 	req = handlers.WithAuthContext(req, "user123", "user@example.com")
 
@@ -383,7 +383,7 @@ func TestVerificationStatus_NotVerified(t *testing.T) {
 		},
 	}
 
-	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 	req := handlers.NewTestRequest(t, "GET", "/auth/verification-status", nil)
 	req = handlers.WithAuthContext(req, "user123", "user@example.com")
 
@@ -400,7 +400,7 @@ func TestVerificationStatus_Unauthorized(t *testing.T) {
 	mockAuth := &handlers.MockAuthService{}
 	mockEmailVerif := &handlers.MockEmailVerificationService{}
 
-	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil)
+	handler := handlers.NewAuthHandlerWithEmailVerification(mockAuth, mockEmailVerif, nil, nil)
 	req := handlers.NewTestRequest(t, "GET", "/auth/verification-status", nil)
 	// No auth context
 

@@ -16,6 +16,7 @@ type Config struct {
 	Auth     AuthConfig
 	Email    EmailConfig
 	MFA      MFAConfig
+	Audit    AuditConfig
 }
 
 type DatabaseConfig struct {
@@ -79,6 +80,13 @@ type MFAConfig struct {
 	MaxAttempts      int
 	AttemptWindow    time.Duration
 	BackupCodeCount  int
+}
+
+type AuditConfig struct {
+	Enabled               bool
+	RetentionDays         int
+	LogAPIKeyUsage        bool
+	APIKeyUsageSampling   float64 // 0.0-1.0, default 1.0 = log all
 }
 
 // getMFAEncryptionKey retrieves and validates the MFA encryption key
@@ -164,6 +172,12 @@ func Load() (*Config, error) {
 			AttemptWindow:   getEnvAsDuration("MFA_ATTEMPT_WINDOW", 15*time.Minute),
 			BackupCodeCount: 8,
 		},
+		Audit: AuditConfig{
+			Enabled:             getBoolEnv("AUDIT_ENABLED", true),
+			RetentionDays:       getEnvAsInt("AUDIT_RETENTION_DAYS", 365),
+			LogAPIKeyUsage:      getBoolEnv("AUDIT_LOG_API_KEY_USAGE", true),
+			APIKeyUsageSampling: getEnvAsFloat("AUDIT_API_KEY_USAGE_SAMPLING", 1.0),
+		},
 	}
 
 	if cfg.Database.Password == "" {
@@ -247,6 +261,15 @@ func getEnvAsDuration(key string, defaultVal time.Duration) time.Duration {
 func getBoolEnv(key string, defaultVal bool) bool {
 	if value := os.Getenv(key); value != "" {
 		return strings.ToLower(value) == "true"
+	}
+	return defaultVal
+}
+
+func getEnvAsFloat(key string, defaultVal float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatVal, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatVal
+		}
 	}
 	return defaultVal
 }

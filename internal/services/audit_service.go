@@ -2,9 +2,13 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
+	"time"
 
+	"github.com/BradenHooton/kamino/internal/config"
 	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/BradenHooton/kamino/internal/repositories"
 	"github.com/google/uuid"
@@ -12,15 +16,17 @@ import (
 
 // AuditService handles audit logging with dual-write pattern (slog + database)
 type AuditService struct {
-	repo   repositories.AuditLogRepository
+	repo   *repositories.AuditLogRepository
 	logger *slog.Logger
+	cfg    *config.AuditConfig
 }
 
 // NewAuditService creates a new AuditService
-func NewAuditService(repo repositories.AuditLogRepository, logger *slog.Logger) *AuditService {
+func NewAuditService(repo *repositories.AuditLogRepository, logger *slog.Logger, cfg *config.AuditConfig) *AuditService {
 	return &AuditService{
 		repo:   repo,
 		logger: logger,
+		cfg:    cfg,
 	}
 }
 
@@ -223,4 +229,103 @@ func (s *AuditService) GetCountForUser(ctx context.Context, userID uuid.UUID) (i
 		return 0, fmt.Errorf("failed to count audit logs: %w", err)
 	}
 	return count, nil
+}
+
+// cryptoRandFloat64 returns a secure random float between 0.0 and 1.0
+// Uses crypto/rand for security-sensitive sampling decisions
+func cryptoRandFloat64() (float64, error) {
+	randomBytes := make([]byte, 8)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		return 0, err
+	}
+
+	// Convert bytes to uint64 and normalize to 0.0-1.0
+	randomValue := binary.BigEndian.Uint64(randomBytes)
+	return float64(randomValue) / float64(^uint64(0)), nil
+}
+
+// LogAPIKeyUsage logs API key usage asynchronously (fire-and-forget pattern)
+// Captures endpoint access, HTTP method, scopes, and response status codes
+// Non-blocking: errors are logged but don't fail the request
+// Respects config flags: LogAPIKeyUsage (enable/disable) and APIKeyUsageSampling (0.0-1.0)
+func (s *AuditService) LogAPIKeyUsage(
+	ctx context.Context,
+	actorID string, // User ID
+	keyID string,
+	keyPrefix string,
+	endpoint string,
+	method string,
+	requiredScopes []string,
+	statusCode int,
+	ipAddress *string,
+	userAgent *string,
+) {
+	// Check if API key usage logging is enabled via config
+	if !s.cfg.LogAPIKeyUsage {
+		return
+	}
+
+	// Check sampling rate (0.0-1.0, where 1.0 = log all)
+	if s.cfg.APIKeyUsageSampling < 1.0 {
+		randomVal, err := cryptoRandFloat64()
+		if err != nil || randomVal > s.cfg.APIKeyUsageSampling {
+			return // Skip logging based on sampling rate
+		}
+	}
+
+	// Fire-and-forget: spawn goroutine with independent timeout
+	go func() {
+		// Create timeout context: 5 seconds max for audit logging
+		auditCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		// Parse actorID string to UUID
+		actorUUID, err := uuid.Parse(actorID)
+		if err != nil {
+			s.logger.ErrorContext(auditCtx, "invalid actor id in api key usage log",
+				slog.String("actor_id", actorID),
+				slog.Any("error", err),
+			)
+			return
+		}
+
+		resourceType := models.AuditResourceTypeAPIKey
+		log := &models.AuditLog{
+			EventType:    models.AuditEventTypeAPIKeyUsage,
+			ActorID:      &actorUUID,
+			ResourceType: &resourceType,
+			ResourceID:   &keyID,
+			Action:       method,
+			Success:      statusCode >= 200 && statusCode < 400,
+			IPAddress:    ipAddress,
+			UserAgent:    userAgent,
+			Metadata: models.NewAPIKeyUsageMetadata(
+				endpoint,
+				method,
+				requiredScopes,
+				statusCode,
+				keyPrefix,
+				ipAddress,
+				userAgent,
+			),
+		}
+
+		// Immediate slog output for real-time visibility
+		s.logger.InfoContext(auditCtx, "api key usage",
+			slog.String("key_prefix", keyPrefix),
+			slog.String("actor_id", actorID),
+			slog.String("endpoint", endpoint),
+			slog.String("method", method),
+			slog.Int("status_code", statusCode),
+		)
+
+		// Persist to database
+		if _, err := s.repo.Create(auditCtx, log); err != nil {
+			s.logger.ErrorContext(auditCtx, "failed to persist api key usage audit log",
+				slog.String("key_prefix", keyPrefix),
+				slog.Any("error", err),
+			)
+		}
+	}()
 }

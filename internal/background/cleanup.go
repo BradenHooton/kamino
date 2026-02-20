@@ -8,12 +8,14 @@ import (
 	"github.com/BradenHooton/kamino/internal/repositories"
 )
 
-// CleanupManager periodically removes expired revoked tokens, login attempts, email verification tokens, and MFA attempts from the database
+// CleanupManager periodically removes expired revoked tokens, login attempts, email verification tokens, MFA attempts, audit logs, and API keys from the database
 type CleanupManager struct {
 	revokeRepo            *repositories.TokenRevocationRepository
 	loginAttemptRepo      *repositories.LoginAttemptRepository
 	emailVerificationRepo *repositories.EmailVerificationRepository
 	mfaAttemptRepo        repositories.MFAAttemptRepository
+	auditLogRepo          *repositories.AuditLogRepository
+	apiKeyRepo            repositories.APIKeyRepository
 	logger                *slog.Logger
 	interval              time.Duration
 	stopCh                chan struct{}
@@ -25,6 +27,8 @@ func NewCleanupManager(
 	loginAttemptRepo *repositories.LoginAttemptRepository,
 	emailVerificationRepo *repositories.EmailVerificationRepository,
 	mfaAttemptRepo repositories.MFAAttemptRepository,
+	auditLogRepo *repositories.AuditLogRepository,
+	apiKeyRepo repositories.APIKeyRepository,
 	logger *slog.Logger,
 	interval time.Duration,
 ) *CleanupManager {
@@ -33,6 +37,8 @@ func NewCleanupManager(
 		loginAttemptRepo:      loginAttemptRepo,
 		emailVerificationRepo: emailVerificationRepo,
 		mfaAttemptRepo:        mfaAttemptRepo,
+		auditLogRepo:          auditLogRepo,
+		apiKeyRepo:            apiKeyRepo,
 		logger:                logger,
 		interval:              interval,
 		stopCh:                make(chan struct{}),
@@ -102,6 +108,27 @@ func (cm *CleanupManager) runCleanup(ctx context.Context) {
 			cm.logger.Error("failed to cleanup expired MFA attempts", slog.Any("error", err))
 		} else {
 			cm.logger.Info("expired MFA attempt cleanup completed")
+		}
+	}
+
+	// Cleanup old audit logs (365+ days old)
+	if cm.auditLogRepo != nil {
+		rowsDeleted, err := cm.auditLogRepo.Cleanup(cleanupCtx, 365)
+		if err != nil {
+			cm.logger.Error("failed to cleanup old audit logs", slog.Any("error", err))
+		} else if rowsDeleted > 0 {
+			cm.logger.Info("old audit log cleanup completed", slog.Int64("rows_deleted", rowsDeleted))
+		}
+	}
+
+	// Cleanup expired API keys (30+ days old)
+	if cm.apiKeyRepo != nil {
+		threshold := time.Now().Add(-30 * 24 * time.Hour)
+		rowsDeleted, err := cm.apiKeyRepo.CleanupExpired(cleanupCtx, threshold)
+		if err != nil {
+			cm.logger.Error("failed to cleanup expired api keys", slog.Any("error", err))
+		} else if rowsDeleted > 0 {
+			cm.logger.Info("expired api key cleanup completed", slog.Int64("rows_deleted", rowsDeleted))
 		}
 	}
 }

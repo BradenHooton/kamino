@@ -21,6 +21,7 @@ import (
 	"github.com/BradenHooton/kamino/internal/database"
 	"github.com/BradenHooton/kamino/internal/handlers"
 	middlewareCustom "github.com/BradenHooton/kamino/internal/middleware"
+	"github.com/BradenHooton/kamino/internal/repositories"
 	"github.com/BradenHooton/kamino/internal/routes"
 	"github.com/BradenHooton/kamino/internal/services"
 	pkghttp "github.com/BradenHooton/kamino/pkg/http"
@@ -204,6 +205,9 @@ func NewTestServer(db *database.DB) *TestServer {
 
 	// Initialize services
 	userService := services.NewUserService(userRepo, logger)
+	auditLogRepo := repositories.NewAuditLogRepository(db)
+	auditService := services.NewAuditService(auditLogRepo, logger, &cfg.Audit)
+
 	authService := services.NewAuthService(
 		userRepo,
 		tokenManager,
@@ -221,7 +225,14 @@ func NewTestServer(db *database.DB) *TestServer {
 		TrustedProxies: cfg.Server.TrustedProxies,
 	}
 	userHandler := handlers.NewUserHandler(userService)
-	authHandler := handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService, ipConfig)
+	authHandler := handlers.NewAuthHandlerWithEmailVerification(authService, emailVerificationService, ipConfig, auditService)
+	auditHandler := handlers.NewAuditHandler(auditService, userService, auditLogRepo)
+
+	// API Key Handler
+	apiKeyRepo := repositories.NewAPIKeyRepository(db)
+	apiKeyManager := auth.NewAPIKeyManager()
+	apiKeyService := services.NewAPIKeyService(apiKeyRepo, apiKeyManager, auditService, logger)
+	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService, userService, auditService)
 
 	var mfaHandler *handlers.MFAHandler
 	if mfaService != nil {
@@ -236,8 +247,8 @@ func NewTestServer(db *database.DB) *TestServer {
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
 
-	// Setup routes using production pattern
-	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, tokenManager, userRepo, revokeRepo, csrfManager, logger)
+	// Setup routes using production pattern (with API key validator for audit logging)
+	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, apiKeyHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService)
 
 	// Create httptest.Server
 	server := httptest.NewServer(r)

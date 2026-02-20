@@ -6,7 +6,9 @@ import (
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/handlers"
 	"github.com/BradenHooton/kamino/internal/middleware"
+	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/BradenHooton/kamino/internal/repositories"
+	"github.com/BradenHooton/kamino/internal/services"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -16,11 +18,15 @@ func RegisterRoutes(
 	userHandler *handlers.UserHandler,
 	authHandler *handlers.AuthHandler,
 	mfaHandler *handlers.MFAHandler,
+	apiKeyHandler *handlers.APIKeyHandler,
 	tokenManager *auth.TokenManager,
 	userRepo *repositories.UserRepository,
 	revokeRepo *repositories.TokenRevocationRepository,
 	csrfManager *auth.CSRFTokenManager,
+	auditHandler *handlers.AuditHandler,
 	logger *slog.Logger,
+	auditService *services.AuditService,
+	apiKeyValidator auth.APIKeyValidator,
 ) {
 	// Rate limiting config for auth endpoints
 	rateLimitConfig := middleware.DefaultAuthRateLimit()
@@ -50,27 +56,41 @@ func RegisterRoutes(
 		router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/mfa/verify", mfaHandler.VerifyMFACode)
 	}
 
-	// Protected routes - authentication required
+	// Protected routes - authentication required (supports both JWT and API keys)
 	router.Group(func(r chi.Router) {
 		revocationConfig := auth.RevocationConfig{FailClosed: true}
-		r.Use(auth.AuthMiddlewareWithRevocation(tokenManager, revokeRepo, revocationConfig))
+		r.Use(auth.AuthMiddlewareWithAPIKey(tokenManager, apiKeyValidator, revokeRepo, revocationConfig, auditService))
 		r.Use(middleware.CSRFProtection(csrfManager, logger))
 
-		// Any authenticated user
-		r.Get("/users/{id}", userHandler.GetUser)
-		r.Put("/users/{id}", userHandler.UpdateUser)
+		// User endpoints with scope enforcement
+		r.With(auth.RequireScope(models.ScopeUsersRead)).Get("/users/{id}", userHandler.GetUser)
+		r.With(auth.RequireScope(models.ScopeUsersWrite)).Put("/users/{id}", userHandler.UpdateUser)
 
-		// Auth endpoints
+		// Auth endpoints (no scope required - all authenticated users)
 		r.Post("/auth/logout", authHandler.Logout)
 		r.Post("/auth/logout-all", authHandler.LogoutAll)
 		r.Get("/auth/verification-status", authHandler.VerificationStatus)
+
+		// API Key endpoints with scope enforcement (only register if apiKeyHandler is provided)
+		if apiKeyHandler != nil {
+			r.With(auth.RequireScope(models.ScopeAPIKeysCreate)).Post("/api-keys", apiKeyHandler.CreateAPIKey)
+			r.With(auth.RequireScope(models.ScopeAPIKeysRead)).Get("/api-keys", apiKeyHandler.ListAPIKeys)
+			r.With(auth.RequireScope(models.ScopeAPIKeysRead)).Get("/api-keys/{id}", apiKeyHandler.GetAPIKey)
+			r.With(auth.RequireScope(models.ScopeAPIKeysRevoke)).Delete("/api-keys/{id}", apiKeyHandler.RevokeAPIKey)
+		}
 
 		// Admin-only routes
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(userRepo, "admin"))
 			r.Get("/users", userHandler.ListUsers)
 			r.Post("/users", userHandler.CreateUser)
-			r.Delete("/users/{id}", userHandler.DeleteUser)
+			r.With(auth.RequireScope(models.ScopeUsersDelete)).Delete("/users/{id}", userHandler.DeleteUser)
+
+			// Audit routes
+			if auditHandler != nil {
+				r.With(auth.RequireScope(models.ScopeAuditRead)).Get("/users/{id}/audit", auditHandler.GetUserAuditTrail)
+				r.With(auth.RequireScope(models.ScopeAuditRead)).Get("/api-keys/{id}/usage", auditHandler.GetAPIKeyUsage)
+			}
 		})
 	})
 }
