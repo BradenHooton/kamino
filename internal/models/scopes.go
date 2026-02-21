@@ -14,6 +14,7 @@ const (
 	// Admin-only scopes
 	ScopeUsersDelete = "users.delete"
 	ScopeAuditRead = "audit.read"
+	ScopeMFAAdmin = "mfa.admin"
 
 	// Wildcard scope - grants all permissions (admin only)
 	ScopeAll = "*"
@@ -28,6 +29,7 @@ var AllValidScopes = map[string]bool{
 	ScopeAPIKeysRevoke: true,
 	ScopeUsersDelete: true,
 	ScopeAuditRead: true,
+	ScopeMFAAdmin: true,
 	ScopeAll: true,
 }
 
@@ -35,6 +37,7 @@ var AllValidScopes = map[string]bool{
 var AdminOnlyScopes = map[string]bool{
 	ScopeUsersDelete: true,
 	ScopeAuditRead: true,
+	ScopeMFAAdmin: true,
 	ScopeAll: true,
 }
 

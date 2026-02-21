@@ -4,11 +4,13 @@ import (
 	"log/slog"
 
 	"github.com/BradenHooton/kamino/internal/auth"
+	"github.com/BradenHooton/kamino/internal/config"
 	"github.com/BradenHooton/kamino/internal/handlers"
 	"github.com/BradenHooton/kamino/internal/middleware"
 	"github.com/BradenHooton/kamino/internal/models"
 	"github.com/BradenHooton/kamino/internal/repositories"
 	"github.com/BradenHooton/kamino/internal/services"
+	pkghttp "github.com/BradenHooton/kamino/pkg/http"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -19,6 +21,7 @@ func RegisterRoutes(
 	authHandler *handlers.AuthHandler,
 	mfaHandler *handlers.MFAHandler,
 	apiKeyHandler *handlers.APIKeyHandler,
+	recoveryHandler *handlers.MFARecoveryHandler,
 	tokenManager *auth.TokenManager,
 	userRepo *repositories.UserRepository,
 	revokeRepo *repositories.TokenRevocationRepository,
@@ -27,9 +30,18 @@ func RegisterRoutes(
 	logger *slog.Logger,
 	auditService *services.AuditService,
 	apiKeyValidator auth.APIKeyValidator,
+	cfg *config.Config,
+	ipConfig *pkghttp.IPConfig,
 ) {
 	// Rate limiting config for auth endpoints
 	rateLimitConfig := middleware.DefaultAuthRateLimit()
+
+	// Authenticated rate limiting config (per-user)
+	authRateLimitConfig := middleware.AuthenticatedRateLimitConfig{
+		ReadOperationsPerMinute:  cfg.Auth.AuthenticatedReadOpsPerMin,
+		WriteOperationsPerMinute: cfg.Auth.AuthenticatedWriteOpsPerMin,
+		AdminOperationsPerMinute: cfg.Auth.AuthenticatedAdminOpsPerMin,
+	}
 
 	// Public routes - no authentication required
 	router.With(middleware.RateLimitByIP(rateLimitConfig)).Post("/auth/login", authHandler.Login)
@@ -59,37 +71,73 @@ func RegisterRoutes(
 	// Protected routes - authentication required (supports both JWT and API keys)
 	router.Group(func(r chi.Router) {
 		revocationConfig := auth.RevocationConfig{FailClosed: true}
-		r.Use(auth.AuthMiddlewareWithAPIKey(tokenManager, apiKeyValidator, revokeRepo, revocationConfig, auditService))
+		r.Use(auth.AuthMiddlewareWithAPIKey(tokenManager, apiKeyValidator, revokeRepo, revocationConfig, auditService, ipConfig))
 		r.Use(middleware.CSRFProtection(csrfManager, logger))
 
 		// User endpoints with scope enforcement
-		r.With(auth.RequireScope(models.ScopeUsersRead)).Get("/users/{id}", userHandler.GetUser)
-		r.With(auth.RequireScope(models.ScopeUsersWrite)).Put("/users/{id}", userHandler.UpdateUser)
+		r.With(
+			auth.RequireScope(models.ScopeUsersRead),
+			middleware.RateLimitByUserID(authRateLimitConfig, "read"),
+		).Get("/users/{id}", userHandler.GetUser)
+		r.With(
+			auth.RequireScope(models.ScopeUsersWrite),
+			middleware.RateLimitByUserID(authRateLimitConfig, "write"),
+		).Put("/users/{id}", userHandler.UpdateUser)
 
 		// Auth endpoints (no scope required - all authenticated users)
-		r.Post("/auth/logout", authHandler.Logout)
-		r.Post("/auth/logout-all", authHandler.LogoutAll)
-		r.Get("/auth/verification-status", authHandler.VerificationStatus)
+		r.With(middleware.RateLimitByUserID(authRateLimitConfig, "write")).Post("/auth/logout", authHandler.Logout)
+		r.With(middleware.RateLimitByUserID(authRateLimitConfig, "write")).Post("/auth/logout-all", authHandler.LogoutAll)
+		r.With(middleware.RateLimitByUserID(authRateLimitConfig, "read")).Get("/auth/verification-status", authHandler.VerificationStatus)
 
 		// API Key endpoints with scope enforcement (only register if apiKeyHandler is provided)
 		if apiKeyHandler != nil {
-			r.With(auth.RequireScope(models.ScopeAPIKeysCreate)).Post("/api-keys", apiKeyHandler.CreateAPIKey)
-			r.With(auth.RequireScope(models.ScopeAPIKeysRead)).Get("/api-keys", apiKeyHandler.ListAPIKeys)
-			r.With(auth.RequireScope(models.ScopeAPIKeysRead)).Get("/api-keys/{id}", apiKeyHandler.GetAPIKey)
-			r.With(auth.RequireScope(models.ScopeAPIKeysRevoke)).Delete("/api-keys/{id}", apiKeyHandler.RevokeAPIKey)
+			r.With(
+				auth.RequireScope(models.ScopeAPIKeysCreate),
+				middleware.RateLimitByUserID(authRateLimitConfig, "write"),
+			).Post("/api-keys", apiKeyHandler.CreateAPIKey)
+			r.With(
+				auth.RequireScope(models.ScopeAPIKeysRead),
+				middleware.RateLimitByUserID(authRateLimitConfig, "read"),
+			).Get("/api-keys", apiKeyHandler.ListAPIKeys)
+			r.With(
+				auth.RequireScope(models.ScopeAPIKeysRead),
+				middleware.RateLimitByUserID(authRateLimitConfig, "read"),
+			).Get("/api-keys/{id}", apiKeyHandler.GetAPIKey)
+			r.With(
+				auth.RequireScope(models.ScopeAPIKeysRevoke),
+				middleware.RateLimitByUserID(authRateLimitConfig, "write"),
+			).Delete("/api-keys/{id}", apiKeyHandler.RevokeAPIKey)
 		}
 
 		// Admin-only routes
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireRole(userRepo, "admin"))
-			r.Get("/users", userHandler.ListUsers)
-			r.Post("/users", userHandler.CreateUser)
-			r.With(auth.RequireScope(models.ScopeUsersDelete)).Delete("/users/{id}", userHandler.DeleteUser)
+			r.With(middleware.RateLimitByUserID(authRateLimitConfig, "admin")).Get("/users", userHandler.ListUsers)
+			r.With(middleware.RateLimitByUserID(authRateLimitConfig, "write")).Post("/users", userHandler.CreateUser)
+			r.With(
+				auth.RequireScope(models.ScopeUsersDelete),
+				middleware.RateLimitByUserID(authRateLimitConfig, "write"),
+			).Delete("/users/{id}", userHandler.DeleteUser)
 
 			// Audit routes
 			if auditHandler != nil {
-				r.With(auth.RequireScope(models.ScopeAuditRead)).Get("/users/{id}/audit", auditHandler.GetUserAuditTrail)
-				r.With(auth.RequireScope(models.ScopeAuditRead)).Get("/api-keys/{id}/usage", auditHandler.GetAPIKeyUsage)
+				r.With(
+					auth.RequireScope(models.ScopeAuditRead),
+					middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+				).Get("/users/{id}/audit", auditHandler.GetUserAuditTrail)
+				r.With(
+					auth.RequireScope(models.ScopeAuditRead),
+					middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+				).Get("/api-keys/{id}/usage", auditHandler.GetAPIKeyUsage)
+			}
+
+			// MFA Recovery routes
+			if recoveryHandler != nil {
+				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Post("/admin/mfa/recovery", recoveryHandler.InitiateRecovery)
+				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Post("/admin/mfa/recovery/{id}/confirm", recoveryHandler.ConfirmRecovery)
+				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Post("/admin/mfa/recovery/{id}/execute", recoveryHandler.ExecuteRecovery)
+				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Get("/admin/mfa/recovery", recoveryHandler.ListPendingRecoveries)
+				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Delete("/admin/mfa/recovery/{id}", recoveryHandler.CancelRecovery)
 			}
 		})
 	})

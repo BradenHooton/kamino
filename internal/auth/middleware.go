@@ -222,7 +222,7 @@ type AuditLogger interface {
 // X-API-Key is checked FIRST (takes precedence), then falls back to Bearer token
 // Creates pseudo-claims for API keys to maintain consistent context usage
 // Optional AuditLogger can be provided to log API key usage
-func AuthMiddlewareWithAPIKey(tm *TokenManager, apiKeyValidator APIKeyValidator, revocationChecker TokenRevocationChecker, revocationConfig RevocationConfig, auditLogger AuditLogger) func(next http.Handler) http.Handler {
+func AuthMiddlewareWithAPIKey(tm *TokenManager, apiKeyValidator APIKeyValidator, revocationChecker TokenRevocationChecker, revocationConfig RevocationConfig, auditLogger AuditLogger, ipConfig *pkghttp.IPConfig) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Check for X-API-Key header FIRST (takes precedence)
@@ -242,11 +242,8 @@ func AuthMiddlewareWithAPIKey(tm *TokenManager, apiKeyValidator APIKeyValidator,
 					Scopes: apiKeyObj.Scopes,
 				}
 
-				// Extract client IP and user agent for audit logging
-				clientIP := r.Header.Get("X-Forwarded-For")
-				if clientIP == "" {
-					clientIP = r.RemoteAddr
-				}
+				// Extract client IP (with trusted proxy validation) and user agent for audit logging
+				clientIP := pkghttp.ExtractClientIP(r, ipConfig)
 				userAgent := r.Header.Get("User-Agent")
 
 				// Wrap response writer to capture status code if audit logging is enabled

@@ -8,7 +8,7 @@ import (
 	"github.com/BradenHooton/kamino/internal/repositories"
 )
 
-// CleanupManager periodically removes expired revoked tokens, login attempts, email verification tokens, MFA attempts, audit logs, and API keys from the database
+// CleanupManager periodically removes expired revoked tokens, login attempts, email verification tokens, MFA attempts, audit logs, API keys, and MFA recovery requests from the database
 type CleanupManager struct {
 	revokeRepo            *repositories.TokenRevocationRepository
 	loginAttemptRepo      *repositories.LoginAttemptRepository
@@ -16,6 +16,7 @@ type CleanupManager struct {
 	mfaAttemptRepo        repositories.MFAAttemptRepository
 	auditLogRepo          *repositories.AuditLogRepository
 	apiKeyRepo            repositories.APIKeyRepository
+	mfaRecoveryRepo       repositories.MFARecoveryRepository
 	logger                *slog.Logger
 	interval              time.Duration
 	stopCh                chan struct{}
@@ -29,6 +30,7 @@ func NewCleanupManager(
 	mfaAttemptRepo repositories.MFAAttemptRepository,
 	auditLogRepo *repositories.AuditLogRepository,
 	apiKeyRepo repositories.APIKeyRepository,
+	mfaRecoveryRepo repositories.MFARecoveryRepository,
 	logger *slog.Logger,
 	interval time.Duration,
 ) *CleanupManager {
@@ -39,6 +41,7 @@ func NewCleanupManager(
 		mfaAttemptRepo:        mfaAttemptRepo,
 		auditLogRepo:          auditLogRepo,
 		apiKeyRepo:            apiKeyRepo,
+		mfaRecoveryRepo:       mfaRecoveryRepo,
 		logger:                logger,
 		interval:              interval,
 		stopCh:                make(chan struct{}),
@@ -129,6 +132,16 @@ func (cm *CleanupManager) runCleanup(ctx context.Context) {
 			cm.logger.Error("failed to cleanup expired api keys", slog.Any("error", err))
 		} else if rowsDeleted > 0 {
 			cm.logger.Info("expired api key cleanup completed", slog.Int64("rows_deleted", rowsDeleted))
+		}
+	}
+
+	// Cleanup expired MFA recovery requests
+	if cm.mfaRecoveryRepo != nil {
+		rowsDeleted, err := cm.mfaRecoveryRepo.ExpireOldRequests(cleanupCtx)
+		if err != nil {
+			cm.logger.Error("failed to cleanup expired mfa recovery requests", slog.Any("error", err))
+		} else if rowsDeleted > 0 {
+			cm.logger.Info("expired mfa recovery request cleanup completed", slog.Int64("rows_deleted", rowsDeleted))
 		}
 	}
 }
