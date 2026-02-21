@@ -62,6 +62,9 @@ type AuthConfig struct {
 	TimingDelayBaseMs            int
 	TimingDelayRandomMs          int
 	TimingDelayOnSuccess         bool
+	AuthenticatedReadOpsPerMin   int // Rate limit for GET operations (default: 100)
+	AuthenticatedWriteOpsPerMin  int // Rate limit for POST/PUT/DELETE (default: 30)
+	AuthenticatedAdminOpsPerMin  int // Rate limit for admin operations (default: 60)
 }
 
 type EmailConfig struct {
@@ -75,11 +78,12 @@ type EmailConfig struct {
 }
 
 type MFAConfig struct {
-	EncryptionKey    []byte
-	Issuer           string
-	MaxAttempts      int
-	AttemptWindow    time.Duration
-	BackupCodeCount  int
+	EncryptionKey           []byte
+	Issuer                  string
+	MaxAttempts             int
+	AttemptWindow           time.Duration
+	BackupCodeCount         int
+	RecoveryRequestExpiryHours int
 }
 
 type AuditConfig struct {
@@ -155,6 +159,9 @@ func Load() (*Config, error) {
 			TimingDelayBaseMs:           getEnvAsInt("TIMING_DELAY_BASE_MS", 500),
 			TimingDelayRandomMs:         getEnvAsInt("TIMING_DELAY_RANDOM_MS", 500),
 			TimingDelayOnSuccess:        getEnv("TIMING_DELAY_ON_SUCCESS", "false") == "true",
+			AuthenticatedReadOpsPerMin:  getEnvAsInt("RATE_LIMIT_AUTH_READ_OPS", 100),
+			AuthenticatedWriteOpsPerMin: getEnvAsInt("RATE_LIMIT_AUTH_WRITE_OPS", 30),
+			AuthenticatedAdminOpsPerMin: getEnvAsInt("RATE_LIMIT_AUTH_ADMIN_OPS", 60),
 		},
 		Email: EmailConfig{
 			AWSRegion:            getEnv("AWS_REGION", "us-east-1"),
@@ -166,11 +173,12 @@ func Load() (*Config, error) {
 			Required:             getBoolEnv("EMAIL_REQUIRED", true),
 		},
 		MFA: MFAConfig{
-			EncryptionKey:   getMFAEncryptionKey(),
-			Issuer:          getEnv("MFA_ISSUER", "Kamino"),
-			MaxAttempts:     getEnvAsInt("MFA_MAX_ATTEMPTS", 5),
-			AttemptWindow:   getEnvAsDuration("MFA_ATTEMPT_WINDOW", 15*time.Minute),
-			BackupCodeCount: 8,
+			EncryptionKey:              getMFAEncryptionKey(),
+			Issuer:                     getEnv("MFA_ISSUER", "Kamino"),
+			MaxAttempts:                getEnvAsInt("MFA_MAX_ATTEMPTS", 5),
+			AttemptWindow:              getEnvAsDuration("MFA_ATTEMPT_WINDOW", 15*time.Minute),
+			BackupCodeCount:            8,
+			RecoveryRequestExpiryHours: getEnvAsInt("MFA_RECOVERY_EXPIRY_HOURS", 1),
 		},
 		Audit: AuditConfig{
 			Enabled:             getBoolEnv("AUDIT_ENABLED", true),

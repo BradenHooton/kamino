@@ -239,6 +239,24 @@ func NewTestServer(db *database.DB) *TestServer {
 		mfaHandler = handlers.NewMFAHandler(mfaService, tokenManager, userRepo, revokeRepo, logger)
 	}
 
+	// MFA Recovery Handler
+	var mfaRecoveryHandler *handlers.MFARecoveryHandler
+	if mfaService != nil {
+		mfaRecoveryRepo := repositories.NewMFARecoveryRepository(db)
+		mfaRecoveryService := services.NewMFARecoveryService(
+			mfaRecoveryRepo,
+			userRepo,
+			mfaService,
+			auditService,
+			logger,
+			services.MFARecoveryConfig{
+				RequestExpiryHours: cfg.MFA.RecoveryRequestExpiryHours,
+				EmailEnabled:       false,
+			},
+		)
+		mfaRecoveryHandler = handlers.NewMFARecoveryHandler(mfaRecoveryService, logger)
+	}
+
 	// Setup Chi router with middleware
 	r := chi.NewRouter()
 	r.Use(chiMiddleware.RequestID)
@@ -247,8 +265,9 @@ func NewTestServer(db *database.DB) *TestServer {
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(60 * time.Second))
 
-	// Setup routes using production pattern (with API key validator for audit logging)
-	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, apiKeyHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService)
+	// Setup routes using production pattern (with recovery handler, API key validator for audit logging, and config for rate limiting)
+	// Note: apiKeyService implements the APIKeyValidator interface
+	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig)
 
 	// Create httptest.Server
 	server := httptest.NewServer(r)

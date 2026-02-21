@@ -58,9 +58,11 @@ func main() {
 	mfaAttemptRepo := repositories.NewMFAAttemptRepository(db.Pool)
 	auditLogRepo := repositories.NewAuditLogRepository(db)
 	apiKeyRepo := repositories.NewAPIKeyRepository(db)
+	mfaRecoveryRepo := repositories.NewMFARecoveryRepository(db)
+
 
 	// Initialize cleanup manager
-	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, auditLogRepo, apiKeyRepo, logger, cfg.Auth.CleanupInterval)
+	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, auditLogRepo, apiKeyRepo, mfaRecoveryRepo, logger, cfg.Auth.CleanupInterval)
 
 	// Initialize token manager
 	tokenManager := auth.NewTokenManager(
@@ -183,6 +185,25 @@ func main() {
 	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
 	auditService := services.NewAuditService(auditLogRepo, logger, &cfg.Audit)
 
+	// MFA Recovery Service (requires mfaService and auditService to be initialized)
+	var mfaRecoveryService *services.MFARecoveryService
+	var mfaRecoveryHandler *handlers.MFARecoveryHandler
+	if mfaService != nil {
+		mfaRecoveryService = services.NewMFARecoveryService(
+			mfaRecoveryRepo,
+			userRepo,
+			mfaService,
+			auditService,
+			logger,
+			services.MFARecoveryConfig{
+				RequestExpiryHours: cfg.MFA.RecoveryRequestExpiryHours,
+				EmailEnabled:       false, // Email notifications not yet implemented
+			},
+		)
+		mfaRecoveryHandler = handlers.NewMFARecoveryHandler(mfaRecoveryService, logger)
+		logger.Info("MFA recovery enabled")
+	}
+
 	// API Key Manager and Service
 	apiKeyManager := auth.NewAPIKeyManager()
 	apiKeyService := services.NewAPIKeyService(apiKeyRepo, apiKeyManager, auditService, logger)
@@ -226,8 +247,8 @@ func main() {
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.Timeout(60 * time.Second))
 
-	// Register routes (with API key validator for audit logging)
-	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, apiKeyHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService)
+	// Register routes (with recovery handler, API key validator for audit logging, and config for rate limiting)
+	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig)
 
 	// Health check with database
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {

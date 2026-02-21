@@ -612,3 +612,81 @@ func (m *MockAuditLogger) LogAccountAction(ctx context.Context, userID, action s
 func (m *MockAuditLogger) LogAuthenticationAttempt(ctx context.Context, email string, success bool, ipAddress string) {
 	// No-op for testing
 }
+
+// MockAuditLogRepository implements AuditLogRepository for testing
+type MockAuditLogRepository struct {
+	CreateFunc              func(ctx context.Context, log *models.AuditLog) (*models.AuditLog, error)
+	GetByUserIDFunc         func(ctx context.Context, userID string, limit int, offset int) ([]*models.AuditLog, error)
+	GetByActorIDFunc        func(ctx context.Context, actorID string, limit int, offset int) ([]*models.AuditLog, error)
+	GetByEventTypeFunc      func(ctx context.Context, eventType string, limit int, offset int) ([]*models.AuditLog, error)
+	GetFailedAttemptsFunc   func(ctx context.Context, email string, since time.Time) (int, error)
+	CleanupFunc             func(ctx context.Context, olderThanDays int) (int64, error)
+	CountByUserIDFunc       func(ctx context.Context, userID string) (int64, error)
+	GetByAPIKeyIDFunc       func(ctx context.Context, keyID string, limit int, offset int) ([]*models.AuditLog, error)
+	CountByAPIKeyIDFunc     func(ctx context.Context, keyID string) (int64, error)
+	CreatedLogs             []*models.AuditLog
+}
+
+func (m *MockAuditLogRepository) Create(ctx context.Context, log *models.AuditLog) (*models.AuditLog, error) {
+	if m.CreateFunc != nil {
+		return m.CreateFunc(ctx, log)
+	}
+	m.CreatedLogs = append(m.CreatedLogs, log)
+	return log, nil
+}
+
+func (m *MockAuditLogRepository) GetByUserID(ctx context.Context, userID string, limit int, offset int) ([]*models.AuditLog, error) {
+	if m.GetByUserIDFunc != nil {
+		return m.GetByUserIDFunc(ctx, userID, limit, offset)
+	}
+	return []*models.AuditLog{}, nil
+}
+
+func (m *MockAuditLogRepository) GetByActorID(ctx context.Context, actorID string, limit int, offset int) ([]*models.AuditLog, error) {
+	if m.GetByActorIDFunc != nil {
+		return m.GetByActorIDFunc(ctx, actorID, limit, offset)
+	}
+	return []*models.AuditLog{}, nil
+}
+
+func (m *MockAuditLogRepository) GetByEventType(ctx context.Context, eventType string, limit int, offset int) ([]*models.AuditLog, error) {
+	if m.GetByEventTypeFunc != nil {
+		return m.GetByEventTypeFunc(ctx, eventType, limit, offset)
+	}
+	return []*models.AuditLog{}, nil
+}
+
+func (m *MockAuditLogRepository) GetFailedAttempts(ctx context.Context, email string, since time.Time) (int, error) {
+	if m.GetFailedAttemptsFunc != nil {
+		return m.GetFailedAttemptsFunc(ctx, email, since)
+	}
+	return 0, nil
+}
+
+func (m *MockAuditLogRepository) Cleanup(ctx context.Context, olderThanDays int) (int64, error) {
+	if m.CleanupFunc != nil {
+		return m.CleanupFunc(ctx, olderThanDays)
+	}
+	return 0, nil
+}
+
+func (m *MockAuditLogRepository) CountByUserID(ctx context.Context, userID string) (int64, error) {
+	if m.CountByUserIDFunc != nil {
+		return m.CountByUserIDFunc(ctx, userID)
+	}
+	return 0, nil
+}
+
+func (m *MockAuditLogRepository) GetByAPIKeyID(ctx context.Context, keyID string, limit int, offset int) ([]*models.AuditLog, error) {
+	if m.GetByAPIKeyIDFunc != nil {
+		return m.GetByAPIKeyIDFunc(ctx, keyID, limit, offset)
+	}
+	return []*models.AuditLog{}, nil
+}
+
+func (m *MockAuditLogRepository) CountByAPIKeyID(ctx context.Context, keyID string) (int64, error) {
+	if m.CountByAPIKeyIDFunc != nil {
+		return m.CountByAPIKeyIDFunc(ctx, keyID)
+	}
+	return 0, nil
+}
