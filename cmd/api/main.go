@@ -60,7 +60,6 @@ func main() {
 	apiKeyRepo := repositories.NewAPIKeyRepository(db)
 	mfaRecoveryRepo := repositories.NewMFARecoveryRepository(db)
 
-
 	// Initialize cleanup manager
 	cleanupManager := background.NewCleanupManager(revokeRepo, loginAttemptRepo, emailVerificationRepo, mfaAttemptRepo, auditLogRepo, apiKeyRepo, mfaRecoveryRepo, logger, cfg.Auth.CleanupInterval)
 
@@ -81,13 +80,13 @@ func main() {
 
 	// Rate limiting service
 	rateLimitConfig := services.RateLimitConfig{
-		MaxFailedAttemptsPerEmail:   cfg.Auth.MaxFailedAttemptsPerEmail,
-		EmailLockoutDuration:        cfg.Auth.EmailLockoutDuration,
-		MaxAttemptsPerIP:            cfg.Auth.MaxAttemptsPerIP,
-		MaxAttemptsPerDevice:        cfg.Auth.MaxAttemptsPerDevice,
-		LookbackWindow:              cfg.Auth.RateLimitLookbackWindow,
+		MaxFailedAttemptsPerEmail:    cfg.Auth.MaxFailedAttemptsPerEmail,
+		EmailLockoutDuration:         cfg.Auth.EmailLockoutDuration,
+		MaxAttemptsPerIP:             cfg.Auth.MaxAttemptsPerIP,
+		MaxAttemptsPerDevice:         cfg.Auth.MaxAttemptsPerDevice,
+		LookbackWindow:               cfg.Auth.RateLimitLookbackWindow,
 		ProgressiveLockoutMultiplier: 1.5,
-		MaxLockoutDuration:          1 * time.Hour,
+		MaxLockoutDuration:           1 * time.Hour,
 	}
 	rateLimitService := services.NewRateLimitService(loginAttemptRepo, rateLimitConfig, logger)
 
@@ -181,9 +180,9 @@ func main() {
 	}
 
 	// Initialize services
-	userService := services.NewUserService(userRepo, logger)
-	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
 	auditService := services.NewAuditService(auditLogRepo, logger, &cfg.Audit)
+	userService := services.NewUserService(userRepo, auditService, logger)
+	authService := services.NewAuthService(userRepo, tokenManager, revokeRepo, rateLimitService, timingDelay, logger, auditLogger, cfg.Server.Env, emailVerificationService)
 
 	// MFA Recovery Service (requires mfaService and auditService to be initialized)
 	var mfaRecoveryService *services.MFARecoveryService
@@ -215,6 +214,10 @@ func main() {
 	userHandler := handlers.NewUserHandler(userService)
 	auditHandler := handlers.NewAuditHandler(auditService, userService, auditLogRepo)
 	apiKeyHandler := handlers.NewAPIKeyHandler(apiKeyService, userService, auditService)
+
+	// Admin handler
+	adminService := services.NewAdminService(userRepo, auditLogRepo, logger)
+	adminHandler := handlers.NewAdminHandler(adminService)
 
 	// Auth handler - with or without email verification
 	var authHandler *handlers.AuthHandler
@@ -248,7 +251,7 @@ func main() {
 	router.Use(middleware.Timeout(60 * time.Second))
 
 	// Register routes (with recovery handler, API key validator for audit logging, and config for rate limiting)
-	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig)
+	routes.RegisterRoutes(router, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig, adminHandler)
 
 	// Health check with database
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {

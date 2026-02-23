@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/BradenHooton/kamino/internal/database"
@@ -192,4 +193,127 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 	}
 
 	return user, nil
+}
+
+// UpdateStatus updates only the status field for a user.
+func (r *UserRepository) UpdateStatus(ctx context.Context, id, status string) error {
+	query := `UPDATE users SET status = $1, updated_at = NOW() WHERE id = $2`
+
+	result, err := r.pool.Exec(ctx, query, status, id)
+	if err != nil {
+		return database.MapPostgresError(err)
+	}
+	if result.RowsAffected() == 0 {
+		return models.ErrNotFound
+	}
+	return nil
+}
+
+// LockAccount sets locked_until; passing nil clears the lock.
+func (r *UserRepository) LockAccount(ctx context.Context, id string, lockedUntil *time.Time) error {
+	query := `UPDATE users SET locked_until = $1, updated_at = NOW() WHERE id = $2`
+
+	result, err := r.pool.Exec(ctx, query, lockedUntil, id)
+	if err != nil {
+		return database.MapPostgresError(err)
+	}
+	if result.RowsAffected() == 0 {
+		return models.ErrNotFound
+	}
+	return nil
+}
+
+// Search returns users matching the given criteria plus the total count for pagination.
+func (r *UserRepository) Search(ctx context.Context, c models.SearchCriteria) ([]*models.User, int64, error) {
+	if c.Limit <= 0 || c.Limit > 100 {
+		c.Limit = 20
+	}
+
+	conditions := make([]string, 0)
+	args := make([]interface{}, 0)
+	argIdx := 1
+
+	if c.Email != nil && *c.Email != "" {
+		conditions = append(conditions, fmt.Sprintf("email ILIKE $%d", argIdx))
+		args = append(args, "%"+*c.Email+"%")
+		argIdx++
+	}
+	if c.Name != nil && *c.Name != "" {
+		conditions = append(conditions, fmt.Sprintf("name ILIKE $%d", argIdx))
+		args = append(args, "%"+*c.Name+"%")
+		argIdx++
+	}
+	if c.Role != nil && *c.Role != "" {
+		conditions = append(conditions, fmt.Sprintf("role = $%d", argIdx))
+		args = append(args, *c.Role)
+		argIdx++
+	}
+	if c.Status != nil && *c.Status != "" {
+		conditions = append(conditions, fmt.Sprintf("status = $%d", argIdx))
+		args = append(args, *c.Status)
+		argIdx++
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Count query — uses only the filter args
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM users %s`, where)
+	var total int64
+	if err := r.pool.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count users: %w", err)
+	}
+
+	// Data query — append limit and offset
+	limitIdx := argIdx
+	offsetIdx := argIdx + 1
+	dataArgs := append(args, c.Limit, c.Offset)
+	dataQuery := fmt.Sprintf(`
+		SELECT id, email, password_hash, name, email_verified, token_key, role, status, locked_until, password_changed_at, created_at, updated_at
+		FROM users %s ORDER BY created_at DESC LIMIT $%d OFFSET $%d
+	`, where, limitIdx, offsetIdx)
+
+	rows, err := r.pool.Query(ctx, dataQuery, dataArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to search users: %w", err)
+	}
+
+	users, err := scanUserRows(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return users, total, nil
+}
+
+// CountTotal returns the total number of users.
+func (r *UserRepository) CountTotal(ctx context.Context) (int64, error) {
+	var n int64
+	return n, r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+}
+
+// CountByStatus returns the number of users with the given status.
+func (r *UserRepository) CountByStatus(ctx context.Context, status string) (int64, error) {
+	var n int64
+	return n, r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE status = $1`, status).Scan(&n)
+}
+
+// CountByRole returns the number of users with the given role.
+func (r *UserRepository) CountByRole(ctx context.Context, role string) (int64, error) {
+	var n int64
+	return n, r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE role = $1`, role).Scan(&n)
+}
+
+// CountMFAEnabled returns the number of users with MFA enabled.
+func (r *UserRepository) CountMFAEnabled(ctx context.Context) (int64, error) {
+	var n int64
+	return n, r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE mfa_enabled = TRUE`).Scan(&n)
+}
+
+// CountNewSince returns the number of users created at or after the given time.
+func (r *UserRepository) CountNewSince(ctx context.Context, since time.Time) (int64, error) {
+	var n int64
+	return n, r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE created_at >= $1`, since).Scan(&n)
 }

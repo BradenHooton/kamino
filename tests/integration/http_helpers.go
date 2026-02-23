@@ -85,20 +85,20 @@ func NewTestServer(db *database.DB) *TestServer {
 	// Create test config
 	cfg := &config.Config{
 		Auth: config.AuthConfig{
-			JWTSecret:                    "test-secret-32-characters-long-for-testing",
-			AccessTokenExpiry:            15 * time.Minute,
-			RefreshTokenExpiry:           7 * 24 * time.Hour,
-			MFATokenExpiry:               5 * time.Minute,
-			TokenManagerTimeout:          2 * time.Second,
-			MaxFailedAttemptsPerEmail:    5,
-			EmailLockoutDuration:         15 * time.Minute,
-			MaxAttemptsPerIP:             10,
-			MaxAttemptsPerDevice:         5,
-			RateLimitLookbackWindow:      1 * time.Hour,
-			TimingDelayBaseMs:            100,
-			TimingDelayRandomMs:          50,
-			TimingDelayOnSuccess:         false,
-			CleanupInterval:              1 * time.Hour,
+			JWTSecret:                 "test-secret-32-characters-long-for-testing",
+			AccessTokenExpiry:         15 * time.Minute,
+			RefreshTokenExpiry:        7 * 24 * time.Hour,
+			MFATokenExpiry:            5 * time.Minute,
+			TokenManagerTimeout:       2 * time.Second,
+			MaxFailedAttemptsPerEmail: 5,
+			EmailLockoutDuration:      15 * time.Minute,
+			MaxAttemptsPerIP:          10,
+			MaxAttemptsPerDevice:      5,
+			RateLimitLookbackWindow:   1 * time.Hour,
+			TimingDelayBaseMs:         100,
+			TimingDelayRandomMs:       50,
+			TimingDelayOnSuccess:      false,
+			CleanupInterval:           1 * time.Hour,
 		},
 		MFA: config.MFAConfig{
 			EncryptionKey:   []byte("test-mfa-encryption-key-32-chars!!"),
@@ -115,10 +115,10 @@ func NewTestServer(db *database.DB) *TestServer {
 			AWSRegion:           "",
 		},
 		Server: config.ServerConfig{
-			Port:             "0",
-			Env:              "test",
-			AllowedOrigins:   []string{},
-			TrustedProxies:   []string{},
+			Port:           "0",
+			Env:            "test",
+			AllowedOrigins: []string{},
+			TrustedProxies: []string{},
 		},
 	}
 
@@ -204,9 +204,9 @@ func NewTestServer(db *database.DB) *TestServer {
 	}
 
 	// Initialize services
-	userService := services.NewUserService(userRepo, logger)
 	auditLogRepo := repositories.NewAuditLogRepository(db)
 	auditService := services.NewAuditService(auditLogRepo, logger, &cfg.Audit)
+	userService := services.NewUserService(userRepo, auditService, logger)
 
 	authService := services.NewAuthService(
 		userRepo,
@@ -267,7 +267,9 @@ func NewTestServer(db *database.DB) *TestServer {
 
 	// Setup routes using production pattern (with recovery handler, API key validator for audit logging, and config for rate limiting)
 	// Note: apiKeyService implements the APIKeyValidator interface
-	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig)
+	adminService := services.NewAdminService(userRepo, auditLogRepo, logger)
+	adminHandler := handlers.NewAdminHandler(adminService)
+	routes.RegisterRoutes(r, userHandler, authHandler, mfaHandler, apiKeyHandler, mfaRecoveryHandler, tokenManager, userRepo, revokeRepo, csrfManager, auditHandler, logger, auditService, apiKeyService, cfg, ipConfig, adminHandler)
 
 	// Create httptest.Server
 	server := httptest.NewServer(r)

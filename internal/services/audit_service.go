@@ -231,6 +231,44 @@ func (s *AuditService) GetCountForUser(ctx context.Context, userID uuid.UUID) (i
 	return count, nil
 }
 
+// LogStatusChange logs a user status-change event (suspended, activated, locked) with a
+// specific event type so dashboard queries can filter by event_type column.
+func (s *AuditService) LogStatusChange(ctx context.Context, eventType string, actorID, targetID uuid.UUID, reason string, metadata models.AuditMetadata) error {
+	resourceType := models.AuditResourceTypeUser
+	targetIDStr := targetID.String()
+	if metadata == nil {
+		metadata = make(models.AuditMetadata)
+	}
+	metadata["reason"] = reason
+
+	log := &models.AuditLog{
+		EventType:    eventType,
+		ActorID:      &actorID,
+		TargetID:     &targetID,
+		ResourceType: &resourceType,
+		ResourceID:   &targetIDStr,
+		Action:       models.AuditActionUpdate,
+		Success:      true,
+		Metadata:     metadata,
+	}
+
+	s.logger.InfoContext(ctx, "user status change",
+		slog.String("event_type", eventType),
+		slog.Any("actor_id", actorID),
+		slog.Any("target_id", targetID),
+		slog.String("reason", reason),
+	)
+
+	if _, err := s.repo.Create(ctx, log); err != nil {
+		s.logger.ErrorContext(ctx, "failed to persist status change audit log",
+			slog.String("event_type", eventType),
+			slog.Any("error", err),
+		)
+		// Non-critical: don't fail the operation if audit logging fails
+	}
+	return nil
+}
+
 // cryptoRandFloat64 returns a secure random float between 0.0 and 1.0
 // Uses crypto/rand for security-sensitive sampling decisions
 func cryptoRandFloat64() (float64, error) {

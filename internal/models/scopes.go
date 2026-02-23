@@ -3,18 +3,21 @@ package models
 // Scope constants define all valid scopes in the system
 const (
 	// User scopes
-	ScopeUsersRead = "users.read"
+	ScopeUsersRead  = "users.read"
 	ScopeUsersWrite = "users.write"
 
 	// API Key scopes
-	ScopeAPIKeysRead = "api_keys.read"
+	ScopeAPIKeysRead   = "api_keys.read"
 	ScopeAPIKeysCreate = "api_keys.create"
 	ScopeAPIKeysRevoke = "api_keys.revoke"
 
 	// Admin-only scopes
-	ScopeUsersDelete = "users.delete"
-	ScopeAuditRead = "audit.read"
-	ScopeMFAAdmin = "mfa.admin"
+	ScopeUsersDelete    = "users.delete"
+	ScopeAuditRead      = "audit.read"
+	ScopeMFAAdmin       = "mfa.admin"
+	ScopeUsersSuspend   = "users.suspend"   // Suspend/activate/disable user accounts
+	ScopeUsersLock      = "users.lock"      // Temporary account locks
+	ScopeAdminDashboard = "admin.dashboard" // Admin dashboard metrics
 
 	// Wildcard scope - grants all permissions (admin only)
 	ScopeAll = "*"
@@ -22,23 +25,29 @@ const (
 
 // AllValidScopes is the whitelist of all allowed scopes
 var AllValidScopes = map[string]bool{
-	ScopeUsersRead: true,
-	ScopeUsersWrite: true,
-	ScopeAPIKeysRead: true,
-	ScopeAPIKeysCreate: true,
-	ScopeAPIKeysRevoke: true,
-	ScopeUsersDelete: true,
-	ScopeAuditRead: true,
-	ScopeMFAAdmin: true,
-	ScopeAll: true,
+	ScopeUsersRead:      true,
+	ScopeUsersWrite:     true,
+	ScopeAPIKeysRead:    true,
+	ScopeAPIKeysCreate:  true,
+	ScopeAPIKeysRevoke:  true,
+	ScopeUsersDelete:    true,
+	ScopeAuditRead:      true,
+	ScopeMFAAdmin:       true,
+	ScopeUsersSuspend:   true,
+	ScopeUsersLock:      true,
+	ScopeAdminDashboard: true,
+	ScopeAll:            true,
 }
 
 // AdminOnlyScopes is the set of scopes that require admin role
 var AdminOnlyScopes = map[string]bool{
-	ScopeUsersDelete: true,
-	ScopeAuditRead: true,
-	ScopeMFAAdmin: true,
-	ScopeAll: true,
+	ScopeUsersDelete:    true,
+	ScopeAuditRead:      true,
+	ScopeMFAAdmin:       true,
+	ScopeUsersSuspend:   true,
+	ScopeUsersLock:      true,
+	ScopeAdminDashboard: true,
+	ScopeAll:            true,
 }
 
 // IsValidScope checks if a scope exists in the whitelist

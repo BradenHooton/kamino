@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/models"
@@ -124,9 +125,9 @@ func (m *MockAuthService) LogoutAll(ctx context.Context, userID string) error {
 // MockEmailVerificationService for testing
 type MockEmailVerificationService struct {
 	SendVerificationEmailFunc func(ctx context.Context, userID, email string) error
-	VerifyEmailFunc          func(ctx context.Context, plainToken string) (string, error)
-	ResendVerificationFunc   func(ctx context.Context, email string) error
-	GetStatusFunc            func(ctx context.Context, userID string) (bool, error)
+	VerifyEmailFunc           func(ctx context.Context, plainToken string) (string, error)
+	ResendVerificationFunc    func(ctx context.Context, email string) error
+	GetStatusFunc             func(ctx context.Context, userID string) (bool, error)
 }
 
 func (m *MockEmailVerificationService) SendVerificationEmail(ctx context.Context, userID, email string) error {
@@ -159,11 +160,14 @@ func (m *MockEmailVerificationService) GetStatus(ctx context.Context, userID str
 
 // MockUserService implements UserService for testing
 type MockUserService struct {
-	GetUserByIDFunc func(id string) (*models.User, error)
-	ListUsersFunc   func(limit, offset int) ([]*models.User, error)
-	CreateUserFunc  func(user *models.User, password string) (*models.User, error)
-	UpdateUserFunc  func(id string, user *models.User) (*models.User, error)
-	DeleteUserFunc  func(id string) error
+	GetUserByIDFunc      func(id string) (*models.User, error)
+	ListUsersFunc        func(limit, offset int) ([]*models.User, error)
+	CreateUserFunc       func(user *models.User, password string) (*models.User, error)
+	UpdateUserFunc       func(id string, user *models.User) (*models.User, error)
+	DeleteUserFunc       func(id string) error
+	UpdateUserStatusFunc func(id, status, reason, actorID string) error
+	LockUserFunc         func(id string, duration time.Duration, reason, actorID string) error
+	SearchUsersFunc      func(criteria models.SearchCriteria) ([]*models.User, int64, error)
 }
 
 func (m *MockUserService) GetUserByID(id string) (*models.User, error) {
@@ -199,6 +203,27 @@ func (m *MockUserService) DeleteUser(id string) error {
 		return nil
 	}
 	return m.DeleteUserFunc(id)
+}
+
+func (m *MockUserService) UpdateUserStatus(id, status, reason, actorID string) error {
+	if m.UpdateUserStatusFunc == nil {
+		return nil
+	}
+	return m.UpdateUserStatusFunc(id, status, reason, actorID)
+}
+
+func (m *MockUserService) LockUser(id string, duration time.Duration, reason, actorID string) error {
+	if m.LockUserFunc == nil {
+		return nil
+	}
+	return m.LockUserFunc(id, duration, reason, actorID)
+}
+
+func (m *MockUserService) SearchUsers(criteria models.SearchCriteria) ([]*models.User, int64, error) {
+	if m.SearchUsersFunc == nil {
+		return []*models.User{}, 0, nil
+	}
+	return m.SearchUsersFunc(criteria)
 }
 
 // WithChiRouteContext adds chi URL parameters to request context for testing
@@ -241,4 +266,3 @@ func WithChiIDFromURL(r *http.Request) *http.Request {
 
 	return r
 }
-

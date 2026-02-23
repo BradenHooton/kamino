@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/models"
@@ -19,6 +20,9 @@ type UserService interface {
 	CreateUser(user *models.User, password string) (*models.User, error)
 	UpdateUser(id string, user *models.User) (*models.User, error)
 	DeleteUser(id string) error
+	UpdateUserStatus(id, status, reason, actorID string) error
+	LockUser(id string, duration time.Duration, reason, actorID string) error
+	SearchUsers(criteria models.SearchCriteria) ([]*models.User, int64, error)
 }
 
 // UserHandler handles user-related HTTP requests
@@ -47,6 +51,37 @@ type CreateUserRequest struct {
 type UpdateUserRequest struct {
 	Name string `json:"name" validate:"omitempty,min=1"`
 	Role string `json:"role" validate:"omitempty,oneof=user admin"`
+}
+
+// UpdateUserStatusRequest is the body for PATCH /users/{id}/status
+type UpdateUserStatusRequest struct {
+	Status string `json:"status" validate:"required,oneof=active suspended disabled"`
+	Reason string `json:"reason" validate:"required,min=10,max=500"`
+}
+
+// LockUserRequest is the body for PATCH /users/{id}/lock
+type LockUserRequest struct {
+	// DurationSeconds is the lock duration in seconds; min=300 (5m), max=86400 (24h)
+	DurationSeconds int    `json:"duration_seconds" validate:"required,min=300,max=86400"`
+	Reason          string `json:"reason" validate:"required,min=10,max=500"`
+}
+
+// SearchUsersRequest is the body for POST /users/search
+type SearchUsersRequest struct {
+	Email  *string `json:"email"`
+	Name   *string `json:"name"`
+	Role   *string `json:"role" validate:"omitempty,oneof=user admin"`
+	Status *string `json:"status" validate:"omitempty,oneof=active suspended disabled"`
+	Limit  int     `json:"limit" validate:"min=0,max=100"`
+	Offset int     `json:"offset" validate:"min=0"`
+}
+
+// SearchUsersResponse wraps search results with pagination info
+type SearchUsersResponse struct {
+	Users  []*UserResponse `json:"users"`
+	Total  int64           `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
 }
 
 // UserResponse represents a user in the HTTP response
@@ -363,6 +398,128 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // Helper functions
+
+// UpdateUserStatus handles PATCH /users/{id}/status (admin only)
+func (h *UserHandler) UpdateUserStatus(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		pkghttp.WriteBadRequest(w, "User ID is required")
+		return
+	}
+
+	claims := auth.GetUserFromContext(r)
+	if claims == nil {
+		pkghttp.WriteUnauthorized(w, "Authentication required")
+		return
+	}
+
+	var req UpdateUserStatusRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		pkghttp.WriteBadRequest(w, "Invalid request body")
+		return
+	}
+	if err := ValidateRequest(req); err != nil {
+		pkghttp.WriteBadRequest(w, err.Error())
+		return
+	}
+
+	if err := h.service.UpdateUserStatus(userID, req.Status, req.Reason, claims.UserID); err != nil {
+		switch {
+		case errors.Is(err, models.ErrForbidden):
+			pkghttp.WriteForbidden(w, "Cannot modify your own account status")
+		case errors.Is(err, models.ErrNotFound):
+			pkghttp.WriteNotFound(w, "User not found")
+		default:
+			pkghttp.WriteInternalError(w, "Internal server error")
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// LockUser handles PATCH /users/{id}/lock (admin only)
+func (h *UserHandler) LockUser(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "id")
+	if userID == "" {
+		pkghttp.WriteBadRequest(w, "User ID is required")
+		return
+	}
+
+	claims := auth.GetUserFromContext(r)
+	if claims == nil {
+		pkghttp.WriteUnauthorized(w, "Authentication required")
+		return
+	}
+
+	var req LockUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		pkghttp.WriteBadRequest(w, "Invalid request body")
+		return
+	}
+	if err := ValidateRequest(req); err != nil {
+		pkghttp.WriteBadRequest(w, err.Error())
+		return
+	}
+
+	duration := time.Duration(req.DurationSeconds) * time.Second
+	if err := h.service.LockUser(userID, duration, req.Reason, claims.UserID); err != nil {
+		switch {
+		case errors.Is(err, models.ErrForbidden):
+			pkghttp.WriteForbidden(w, "Cannot lock your own account")
+		case errors.Is(err, models.ErrNotFound):
+			pkghttp.WriteNotFound(w, "User not found")
+		case errors.Is(err, models.ErrBadRequest):
+			pkghttp.WriteBadRequest(w, err.Error())
+		default:
+			pkghttp.WriteInternalError(w, "Internal server error")
+		}
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SearchUsers handles POST /users/search (admin only)
+func (h *UserHandler) SearchUsers(w http.ResponseWriter, r *http.Request) {
+	var req SearchUsersRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		pkghttp.WriteBadRequest(w, "Invalid request body")
+		return
+	}
+	if err := ValidateRequest(req); err != nil {
+		pkghttp.WriteBadRequest(w, err.Error())
+		return
+	}
+
+	criteria := models.SearchCriteria{
+		Email:  req.Email,
+		Name:   req.Name,
+		Role:   req.Role,
+		Status: req.Status,
+		Limit:  req.Limit,
+		Offset: req.Offset,
+	}
+
+	users, total, err := h.service.SearchUsers(criteria)
+	if err != nil {
+		pkghttp.WriteInternalError(w, "Internal server error")
+		return
+	}
+
+	resp := &SearchUsersResponse{
+		Users:  make([]*UserResponse, len(users)),
+		Total:  total,
+		Limit:  req.Limit,
+		Offset: req.Offset,
+	}
+	for i, u := range users {
+		resp.Users[i] = userModelToResponse(u)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
 
 // checkUserAccess verifies that the authenticated user can access the requested resource
 // Allows access if: user is accessing their own data OR user is admin
