@@ -11,7 +11,6 @@ import (
 	"github.com/BradenHooton/kamino/internal/auth"
 	"github.com/BradenHooton/kamino/internal/handlers"
 	"github.com/BradenHooton/kamino/internal/models"
-	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -62,9 +61,7 @@ func TestUpdateUser_PrivilegeEscalation_UserCannotChangeOwnRole(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	// ✅ Add chi route context to set the {id} URL parameter
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", userID)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = handlers.WithChiRouteContext(req, map[string]string{"id": userID})
 
 	w := httptest.NewRecorder()
 	handler.UpdateUser(w, req)
@@ -121,9 +118,7 @@ func TestUpdateUser_PrivilegeEscalation_AdminCannotChangeOwnRole(t *testing.T) {
 	req = req.WithContext(ctx)
 
 	// ✅ Add chi route context to set the {id} URL parameter
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", adminID)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = handlers.WithChiRouteContext(req, map[string]string{"id": adminID})
 
 	w := httptest.NewRecorder()
 	handler.UpdateUser(w, req)
@@ -201,9 +196,7 @@ func TestUpdateUser_AuthorizedRoleChange_AdminCanChangeOtherUserRole(t *testing.
 	req = req.WithContext(ctx)
 
 	// ✅ Add chi route context to set the {id} URL parameter
-	rctx := chi.NewRouteContext()
-	rctx.URLParams.Add("id", targetUserID)
-	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	req = handlers.WithChiRouteContext(req, map[string]string{"id": targetUserID})
 
 	w := httptest.NewRecorder()
 	handler.UpdateUser(w, req)

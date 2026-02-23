@@ -11,12 +11,15 @@ import (
 
 // MockUserRepository implements UserRepository for testing
 type MockUserRepository struct {
-	GetByIDFunc   func(ctx context.Context, id string) (*models.User, error)
-	ListFunc      func(ctx context.Context, limit, offset int) ([]*models.User, error)
-	CreateFunc    func(ctx context.Context, user *models.User) (*models.User, error)
-	UpdateFunc    func(ctx context.Context, id string, user *models.User) (*models.User, error)
-	DeleteFunc    func(ctx context.Context, id string) error
-	GetByEmailFunc func(ctx context.Context, email string) (*models.User, error)
+	GetByIDFunc      func(ctx context.Context, id string) (*models.User, error)
+	ListFunc         func(ctx context.Context, limit, offset int) ([]*models.User, error)
+	CreateFunc       func(ctx context.Context, user *models.User) (*models.User, error)
+	UpdateFunc       func(ctx context.Context, id string, user *models.User) (*models.User, error)
+	DeleteFunc       func(ctx context.Context, id string) error
+	GetByEmailFunc   func(ctx context.Context, email string) (*models.User, error)
+	UpdateStatusFunc func(ctx context.Context, id, status string) error
+	LockAccountFunc  func(ctx context.Context, id string, lockedUntil *time.Time) error
+	SearchFunc       func(ctx context.Context, criteria models.SearchCriteria) ([]*models.User, int64, error)
 }
 
 func (m *MockUserRepository) GetByID(ctx context.Context, id string) (*models.User, error) {
@@ -61,11 +64,32 @@ func (m *MockUserRepository) GetByEmail(ctx context.Context, email string) (*mod
 	return nil, models.ErrNotFound
 }
 
+func (m *MockUserRepository) UpdateStatus(ctx context.Context, id, status string) error {
+	if m.UpdateStatusFunc != nil {
+		return m.UpdateStatusFunc(ctx, id, status)
+	}
+	return nil
+}
+
+func (m *MockUserRepository) LockAccount(ctx context.Context, id string, lockedUntil *time.Time) error {
+	if m.LockAccountFunc != nil {
+		return m.LockAccountFunc(ctx, id, lockedUntil)
+	}
+	return nil
+}
+
+func (m *MockUserRepository) Search(ctx context.Context, criteria models.SearchCriteria) ([]*models.User, int64, error) {
+	if m.SearchFunc != nil {
+		return m.SearchFunc(ctx, criteria)
+	}
+	return []*models.User{}, 0, nil
+}
+
 // MockTokenRevocationRepository implements TokenRevocationRepository for testing
 type MockTokenRevocationRepository struct {
-	RevokeTokenFunc       func(ctx context.Context, jti, userID, tokenType string, expiresAt time.Time, reason string) error
+	RevokeTokenFunc         func(ctx context.Context, jti, userID, tokenType string, expiresAt time.Time, reason string) error
 	RevokeAllUserTokensFunc func(ctx context.Context, userID, reason string) error
-	IsTokenRevokedFunc    func(ctx context.Context, jti string) (bool, error)
+	IsTokenRevokedFunc      func(ctx context.Context, jti string) (bool, error)
 }
 
 func (m *MockTokenRevocationRepository) RevokeToken(ctx context.Context, jti, userID, tokenType string, expiresAt time.Time, reason string) error {
@@ -225,7 +249,7 @@ func NewTestEmailVerificationTokenUsed(id, userID, email string) *models.EmailVe
 
 // FailingRateLimitService is used for testing auth service
 type MockRateLimitService struct {
-	CheckRateLimitFunc    func(ctx context.Context, email, ipAddress, userAgent string) (bool, *time.Duration, error)
+	CheckRateLimitFunc     func(ctx context.Context, email, ipAddress, userAgent string) (bool, *time.Duration, error)
 	RecordLoginAttemptFunc func(ctx context.Context, email, ipAddress, userAgent string, success bool, failureReason *string) error
 }
 
@@ -328,16 +352,16 @@ func NewTokenClaimsExpired(userID, email, tokenType string) *models.TokenClaims 
 
 // MockMFADeviceRepository implements MFADeviceRepository for testing
 type MockMFADeviceRepository struct {
-	CreateFunc                func(ctx context.Context, device *models.MFADevice) error
-	GetByIDFunc               func(ctx context.Context, deviceID string) (*models.MFADevice, error)
-	GetByUserIDFunc           func(ctx context.Context, userID string) ([]models.MFADevice, error)
-	GetVerifiedByUserIDFunc   func(ctx context.Context, userID string) ([]models.MFADevice, error)
-	GetPrimaryDeviceFunc      func(ctx context.Context, userID string) (*models.MFADevice, error)
-	MarkAsVerifiedFunc        func(ctx context.Context, deviceID string) error
-	UpdateLastUsedAtFunc      func(ctx context.Context, deviceID string) error
-	UpdateBackupCodesFunc     func(ctx context.Context, deviceID string, codes []models.BackupCodeEntry) error
-	DeleteFunc                func(ctx context.Context, deviceID string) error
-	DeleteByUserIDFunc        func(ctx context.Context, userID string) error
+	CreateFunc              func(ctx context.Context, device *models.MFADevice) error
+	GetByIDFunc             func(ctx context.Context, deviceID string) (*models.MFADevice, error)
+	GetByUserIDFunc         func(ctx context.Context, userID string) ([]models.MFADevice, error)
+	GetVerifiedByUserIDFunc func(ctx context.Context, userID string) ([]models.MFADevice, error)
+	GetPrimaryDeviceFunc    func(ctx context.Context, userID string) (*models.MFADevice, error)
+	MarkAsVerifiedFunc      func(ctx context.Context, deviceID string) error
+	UpdateLastUsedAtFunc    func(ctx context.Context, deviceID string) error
+	UpdateBackupCodesFunc   func(ctx context.Context, deviceID string, codes []models.BackupCodeEntry) error
+	DeleteFunc              func(ctx context.Context, deviceID string) error
+	DeleteByUserIDFunc      func(ctx context.Context, userID string) error
 }
 
 func (m *MockMFADeviceRepository) Create(ctx context.Context, device *models.MFADevice) error {
@@ -474,15 +498,15 @@ func NewTestMFADevice(id, userID, deviceName string, encrypted, nonce []byte, ba
 	}
 
 	return &models.MFADevice{
-		ID:                     id,
-		UserID:                 userID,
-		DeviceName:             deviceName,
-		TOTPSecretEncrypted:    encrypted,
-		TOTPSecretNonce:        nonce,
-		BackupCodes:            backupCodeEntries,
-		LastUsedAt:             nil,
-		CreatedAt:              now,
-		VerifiedAt:             &now, // Verified by default
+		ID:                  id,
+		UserID:              userID,
+		DeviceName:          deviceName,
+		TOTPSecretEncrypted: encrypted,
+		TOTPSecretNonce:     nonce,
+		BackupCodes:         backupCodeEntries,
+		LastUsedAt:          nil,
+		CreatedAt:           now,
+		VerifiedAt:          &now, // Verified by default
 	}
 }
 
@@ -567,9 +591,9 @@ func (m *MockTimingDelay) WaitFrom(startTime time.Time, succeeded bool) {
 
 // MockEmailVerificationService implements EmailVerificationService interface for testing
 type MockEmailVerificationService struct {
-	SendVerificationEmailFunc func(ctx context.Context, userID, email string) error
-	VerifyEmailFunc           func(ctx context.Context, userID, tokenString string) error
-	GetStatusFunc             func(ctx context.Context, userID string) (bool, error)
+	SendVerificationEmailFunc   func(ctx context.Context, userID, email string) error
+	VerifyEmailFunc             func(ctx context.Context, userID, tokenString string) error
+	GetStatusFunc               func(ctx context.Context, userID string) (bool, error)
 	ResendVerificationEmailFunc func(ctx context.Context, userID, email string) error
 }
 
@@ -615,16 +639,16 @@ func (m *MockAuditLogger) LogAuthenticationAttempt(ctx context.Context, email st
 
 // MockAuditLogRepository implements AuditLogRepository for testing
 type MockAuditLogRepository struct {
-	CreateFunc              func(ctx context.Context, log *models.AuditLog) (*models.AuditLog, error)
-	GetByUserIDFunc         func(ctx context.Context, userID string, limit int, offset int) ([]*models.AuditLog, error)
-	GetByActorIDFunc        func(ctx context.Context, actorID string, limit int, offset int) ([]*models.AuditLog, error)
-	GetByEventTypeFunc      func(ctx context.Context, eventType string, limit int, offset int) ([]*models.AuditLog, error)
-	GetFailedAttemptsFunc   func(ctx context.Context, email string, since time.Time) (int, error)
-	CleanupFunc             func(ctx context.Context, olderThanDays int) (int64, error)
-	CountByUserIDFunc       func(ctx context.Context, userID string) (int64, error)
-	GetByAPIKeyIDFunc       func(ctx context.Context, keyID string, limit int, offset int) ([]*models.AuditLog, error)
-	CountByAPIKeyIDFunc     func(ctx context.Context, keyID string) (int64, error)
-	CreatedLogs             []*models.AuditLog
+	CreateFunc            func(ctx context.Context, log *models.AuditLog) (*models.AuditLog, error)
+	GetByUserIDFunc       func(ctx context.Context, userID string, limit int, offset int) ([]*models.AuditLog, error)
+	GetByActorIDFunc      func(ctx context.Context, actorID string, limit int, offset int) ([]*models.AuditLog, error)
+	GetByEventTypeFunc    func(ctx context.Context, eventType string, limit int, offset int) ([]*models.AuditLog, error)
+	GetFailedAttemptsFunc func(ctx context.Context, email string, since time.Time) (int, error)
+	CleanupFunc           func(ctx context.Context, olderThanDays int) (int64, error)
+	CountByUserIDFunc     func(ctx context.Context, userID string) (int64, error)
+	GetByAPIKeyIDFunc     func(ctx context.Context, keyID string, limit int, offset int) ([]*models.AuditLog, error)
+	CountByAPIKeyIDFunc   func(ctx context.Context, keyID string) (int64, error)
+	CreatedLogs           []*models.AuditLog
 }
 
 func (m *MockAuditLogRepository) Create(ctx context.Context, log *models.AuditLog) (*models.AuditLog, error) {

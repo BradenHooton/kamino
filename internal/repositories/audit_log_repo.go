@@ -3,6 +3,7 @@ package repositories
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/BradenHooton/kamino/internal/database"
 	"github.com/BradenHooton/kamino/internal/models"
@@ -224,5 +225,39 @@ func (r *AuditLogRepository) CountByAPIKeyID(ctx context.Context, keyID string) 
 		return 0, fmt.Errorf("failed to count api key usage logs: %w", err)
 	}
 
+	return count, nil
+}
+
+// GetRecentByEventType returns the most recent audit logs for a given event type.
+func (r *AuditLogRepository) GetRecentByEventType(ctx context.Context, eventType string, limit int) ([]*models.AuditLog, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	query := `
+		SELECT id, event_type, actor_id, target_id, resource_type, resource_id,
+		       action, success, failure_reason, ip_address, user_agent, metadata, created_at
+		FROM audit_logs
+		WHERE event_type = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`
+	rows, err := r.pool.Query(ctx, query, eventType, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query recent audit logs: %w", err)
+	}
+	return scanAuditLogRows(rows)
+}
+
+// CountTodayByEventType returns the count of events of a given type since midnight UTC today.
+func (r *AuditLogRepository) CountTodayByEventType(ctx context.Context, eventType string) (int64, error) {
+	midnight := time.Now().UTC().Truncate(24 * time.Hour)
+	var count int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM audit_logs WHERE event_type = $1 AND created_at >= $2`,
+		eventType, midnight,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count today's audit logs: %w", err)
+	}
 	return count, nil
 }

@@ -32,6 +32,7 @@ func RegisterRoutes(
 	apiKeyValidator auth.APIKeyValidator,
 	cfg *config.Config,
 	ipConfig *pkghttp.IPConfig,
+	adminHandler *handlers.AdminHandler,
 ) {
 	// Rate limiting config for auth endpoints
 	rateLimitConfig := middleware.DefaultAuthRateLimit()
@@ -119,6 +120,21 @@ func RegisterRoutes(
 				middleware.RateLimitByUserID(authRateLimitConfig, "write"),
 			).Delete("/users/{id}", userHandler.DeleteUser)
 
+			r.With(
+				auth.RequireScope(models.ScopeUsersSuspend),
+				middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+			).Patch("/users/{id}/status", userHandler.UpdateUserStatus)
+
+			r.With(
+				auth.RequireScope(models.ScopeUsersLock),
+				middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+			).Patch("/users/{id}/lock", userHandler.LockUser)
+
+			r.With(
+				auth.RequireScope(models.ScopeUsersRead),
+				middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+			).Post("/users/search", userHandler.SearchUsers)
+
 			// Audit routes
 			if auditHandler != nil {
 				r.With(
@@ -138,6 +154,18 @@ func RegisterRoutes(
 				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Post("/admin/mfa/recovery/{id}/execute", recoveryHandler.ExecuteRecovery)
 				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Get("/admin/mfa/recovery", recoveryHandler.ListPendingRecoveries)
 				r.With(auth.RequireScope(models.ScopeMFAAdmin)).Delete("/admin/mfa/recovery/{id}", recoveryHandler.CancelRecovery)
+			}
+
+			// Dashboard routes (admin only)
+			if adminHandler != nil {
+				r.With(
+					auth.RequireScope(models.ScopeAdminDashboard),
+					middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+				).Get("/admin/dashboard/stats", adminHandler.GetDashboardStats)
+				r.With(
+					auth.RequireScope(models.ScopeAdminDashboard),
+					middleware.RateLimitByUserID(authRateLimitConfig, "admin"),
+				).Get("/admin/dashboard/activity", adminHandler.GetRecentActivity)
 			}
 		})
 	})

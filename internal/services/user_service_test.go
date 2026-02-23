@@ -20,7 +20,7 @@ func TestUserService_GetUserByID_Success(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.GetUserByID("user123")
 
@@ -38,7 +38,7 @@ func TestUserService_GetUserByID_NotFound(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.GetUserByID("nonexistent")
 
@@ -55,7 +55,7 @@ func TestUserService_GetUserByID_DatabaseError(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.GetUserByID("user123")
 
@@ -77,7 +77,7 @@ func TestUserService_ListUsers_Success(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.ListUsers(10, 0)
 
@@ -95,7 +95,7 @@ func TestUserService_ListUsers_Empty(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.ListUsers(10, 0)
 
@@ -111,7 +111,7 @@ func TestUserService_ListUsers_DatabaseError(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.ListUsers(10, 0)
 
@@ -136,7 +136,7 @@ func TestUserService_CreateUser_Success(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.CreateUser(newUser, "SecurePassword123!")
 
@@ -157,7 +157,7 @@ func TestUserService_CreateUser_DuplicateEmail(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.CreateUser(newUser, "SecurePassword123!")
 
@@ -176,7 +176,7 @@ func TestUserService_CreateUser_InvalidPassword(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	// Weak password
 	result, err := svc.CreateUser(newUser, "weak")
@@ -199,7 +199,7 @@ func TestUserService_CreateUser_NoPassword(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	// Empty password should be allowed (admin creating user without password)
 	result, err := svc.CreateUser(newUser, "")
@@ -227,7 +227,7 @@ func TestUserService_UpdateUser_Success(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.UpdateUser("user123", updatedUser)
 
@@ -249,7 +249,7 @@ func TestUserService_UpdateUser_NotFound(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.UpdateUser("nonexistent", updatedUser)
 
@@ -281,7 +281,7 @@ func TestUserService_UpdateUser_PartialFields(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.UpdateUser("user123", updatedUser)
 
@@ -307,7 +307,7 @@ func TestUserService_UpdateUser_DatabaseError(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	result, err := svc.UpdateUser("user123", updatedUser)
 
@@ -329,7 +329,7 @@ func TestUserService_DeleteUser_Success(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	err := svc.DeleteUser("user123")
 
@@ -344,7 +344,7 @@ func TestUserService_DeleteUser_NotFound(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	err := svc.DeleteUser("nonexistent")
 
@@ -365,7 +365,7 @@ func TestUserService_DeleteUser_DatabaseError(t *testing.T) {
 	}
 
 	logger := slog.Default()
-	svc := NewUserService(mockUserRepo, logger)
+	svc := NewUserService(mockUserRepo, nil, logger)
 
 	err := svc.DeleteUser("user123")
 
